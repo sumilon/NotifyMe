@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  BackHandler,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -48,7 +49,7 @@ function timeDisplay12(hour, minute) {
   return `${h12}:${String(minute).padStart(2, "0")} ${p}`;
 }
 
-// ─── Main Screen ───────────────────────────────────────────────────────────────
+// ─── Constants (module-level — no recreation on render) ────────────────────────
 const REPEATS = [
   {
     id: REPEAT_TYPES.ONCE,
@@ -70,59 +71,177 @@ const REPEATS = [
   },
 ];
 
+// ─── SectionLabel — extracted to avoid inline style objects on every render ────
+function SectionLabel({ text, required }) {
+  return (
+    <View style={sl.row}>
+      <View style={sl.line} />
+      <Text style={sl.text}>{text}</Text>
+      {required && <Text style={sl.star}>*</Text>}
+    </View>
+  );
+}
+
+const sl = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: SPACING.xl,
+    marginBottom: SPACING.sm,
+  },
+  line: {
+    width: 3,
+    height: 14,
+    borderRadius: 2,
+    backgroundColor: COLORS.primary,
+    marginRight: SPACING.sm,
+  },
+  text: {
+    fontSize: 11,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+  },
+  star: { color: COLORS.error, fontSize: FONTS.sizes.sm, marginLeft: 2 },
+});
+
+// ─── Main Screen ───────────────────────────────────────────────────────────────
 export default function AddTaskScreen({ navigation, route }) {
   const { addTask, updateTask } = useTasks();
   const { showToast } = useToast();
   const editingTask = route?.params?.task || null;
   const isEditing = !!editingTask;
 
-  // After migration, every task has timeHour/timeMinute/dateYear/etc.
-  // No need for ISO-string fallbacks anymore.
-  const initTimeInts = () =>
+  // Initialise from editing task (always has integer fields post-migration)
+  const [title, setTitle] = useState(editingTask?.title || "");
+  const [description, setDescription] = useState(editingTask?.description || "");
+  const [timeInts, setTimeInts] = useState(() =>
     isEditing
       ? { hour: editingTask.timeHour, minute: editingTask.timeMinute }
-      : defaultTimeInts();
-
-  const initDateInts = () =>
-    isEditing && editingTask.dateYear !== undefined
-      ? {
-          year: editingTask.dateYear,
-          month: editingTask.dateMonth,
-          day: editingTask.dateDay,
-        }
-      : defaultDateInts();
-
-  const [title, setTitle] = useState(editingTask?.title || "");
-  const [description, setDescription] = useState(
-    editingTask?.description || "",
+      : defaultTimeInts(),
   );
-  const [timeInts, setTimeInts] = useState(initTimeInts);
   const [additionalTimes, setAdditionalTimes] = useState(
     editingTask?.additionalTimes || [],
   );
-  const [dateInts, setDateInts] = useState(initDateInts);
+  const [dateInts, setDateInts] = useState(() =>
+    isEditing && editingTask.dateYear !== undefined
+      ? { year: editingTask.dateYear, month: editingTask.dateMonth, day: editingTask.dateDay }
+      : defaultDateInts(),
+  );
   const [repeatType, setRepeatType] = useState(
     editingTask?.repeatType || REPEAT_TYPES.ONCE,
   );
-  const [selectedDays, setSelectedDays] = useState(
-    editingTask?.selectedDays || [],
-  );
+  const [selectedDays, setSelectedDays] = useState(editingTask?.selectedDays || []);
   const [category, setCategory] = useState(editingTask?.category || "general");
+
   // timePickerIndex: null = primary time, number = index in additionalTimes
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [timePickerIndex, setTimePickerIndex] = useState(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errorDialog, setErrorDialog] = useState(null);
+  const [discardConfirm, setDiscardConfirm] = useState(false);
 
-  // Which time slot is currently being edited
+  // ─── Dirty tracking — snapshot of initial values to detect unsaved changes ───
+  // Using a ref so comparisons don't trigger re-renders.
+  // savedRef suppresses the back guard during the 900ms post-save delay before navigation fires.
+  const savedRef = useRef(false);
+  const initialValues = useRef({
+    title: editingTask?.title || "",
+    description: editingTask?.description || "",
+    timeHour: isEditing ? editingTask.timeHour : null,
+    timeMinute: isEditing ? editingTask.timeMinute : null,
+    additionalTimes: JSON.stringify(editingTask?.additionalTimes || []),
+    dateYear: isEditing ? editingTask.dateYear : null,
+    dateMonth: isEditing ? editingTask.dateMonth : null,
+    dateDay: isEditing ? editingTask.dateDay : null,
+    repeatType: editingTask?.repeatType || REPEAT_TYPES.ONCE,
+    selectedDays: JSON.stringify(editingTask?.selectedDays || []),
+    category: editingTask?.category || "general",
+  });
+
+  const isDirty = useMemo(() => {
+    const iv = initialValues.current;
+    // For new tasks: dirty if any real content entered
+    if (!isEditing) {
+      return (
+        title.trim().length > 0 ||
+        description.trim().length > 0 ||
+        additionalTimes.length > 0 ||
+        category !== "general" ||
+        repeatType !== REPEAT_TYPES.ONCE ||
+        selectedDays.length > 0
+      );
+    }
+    // For edits: dirty if anything changed from original
+    return (
+      title !== iv.title ||
+      description !== iv.description ||
+      timeInts.hour !== iv.timeHour ||
+      timeInts.minute !== iv.timeMinute ||
+      JSON.stringify(additionalTimes) !== iv.additionalTimes ||
+      dateInts.year !== iv.dateYear ||
+      dateInts.month !== iv.dateMonth ||
+      dateInts.day !== iv.dateDay ||
+      repeatType !== iv.repeatType ||
+      JSON.stringify(selectedDays) !== iv.selectedDays ||
+      category !== iv.category
+    );
+  }, [
+    isEditing, title, description, timeInts, additionalTimes,
+    dateInts, repeatType, selectedDays, category,
+  ]);
+
+  // ─── Back guard — intercept hardware back (Android) and nav back ─────────────
+  const handleBack = useCallback(() => {
+    if (isDirty && !saving && !savedRef.current) {
+      hapticLight();
+      setDiscardConfirm(true);
+      return true; // tells BackHandler we consumed the event
+    }
+    navigation.goBack();
+    return true;
+  }, [isDirty, saving, navigation]);
+
+  // Android hardware back button
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", handleBack);
+    return () => sub.remove();
+  }, [handleBack]);
+
   const activeTimeInts =
     timePickerIndex === null
       ? timeInts
       : (additionalTimes[timePickerIndex] ?? timeInts);
 
+  // Derived: is the selected date/time in the past?
+  const isPast = useMemo(() => {
+    if (repeatType !== REPEAT_TYPES.ONCE) return false;
+    const fireAt = new Date(
+      dateInts.year, dateInts.month, dateInts.day,
+      timeInts.hour, timeInts.minute, 0, 0,
+    );
+    return fireAt <= new Date();
+  }, [repeatType, dateInts, timeInts]);
+
+  // Human-readable date label for the date picker button
+  const dateLabel = useMemo(() => {
+    const d = new Date(dateInts.year, dateInts.month, dateInts.day);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    d.setHours(0, 0, 0, 0);
+    const diff = Math.round((d - today) / 86400000);
+    if (diff === 0) return "Today";
+    if (diff === 1) return "Tomorrow";
+    return d.toLocaleDateString("en-US", {
+      weekday: "long", month: "long", day: "numeric", year: "numeric",
+    });
+  }, [dateInts]);
+
+  // ─── Handlers ───────────────────────────────────────────────────────────────
   const openTimePicker = useCallback((index) => {
-    setTimePickerIndex(index); // null = primary, 0,1,2... = additional
+    setTimePickerIndex(index);
     setShowTimePicker(true);
   }, []);
 
@@ -156,17 +275,6 @@ export default function AddTaskScreen({ navigation, route }) {
     setAdditionalTimes((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const fireAt = new Date(
-    dateInts.year,
-    dateInts.month,
-    dateInts.day,
-    timeInts.hour,
-    timeInts.minute,
-    0,
-    0,
-  );
-  const isPast = repeatType === REPEAT_TYPES.ONCE && fireAt <= new Date();
-
   const toggleDay = useCallback((id) => {
     hapticLight();
     setSelectedDays((prev) =>
@@ -174,7 +282,7 @@ export default function AddTaskScreen({ navigation, route }) {
     );
   }, []);
 
-  const validate = () => {
+  const validate = useCallback(() => {
     if (!title.trim()) {
       setErrorDialog({
         icon: "pencil-outline",
@@ -196,14 +304,14 @@ export default function AddTaskScreen({ navigation, route }) {
         icon: "alert-circle-outline",
         title: "Past Date & Time",
         message:
-          "The selected date and time is in the past. Please choose a future time for your reminder.",
+          "The selected date and time is in the past. Please choose a future time.",
       });
       return false;
     }
     return true;
-  };
+  }, [title, repeatType, selectedDays, isPast]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!validate()) {
       hapticError();
       return;
@@ -211,7 +319,6 @@ export default function AddTaskScreen({ navigation, route }) {
     hapticLight();
     setSaving(true);
 
-    // Pure integer storage — no ISO strings needed
     const taskData = {
       ...(isEditing
         ? { id: editingTask.id, notificationIds: editingTask.notificationIds }
@@ -239,6 +346,7 @@ export default function AddTaskScreen({ navigation, route }) {
         isEditing ? "Reminder updated" : "Reminder created",
         title.trim(),
       );
+      savedRef.current = true;
       setTimeout(() => navigation.goBack(), 900);
     } catch {
       hapticError();
@@ -250,23 +358,11 @@ export default function AddTaskScreen({ navigation, route }) {
     } finally {
       setSaving(false);
     }
-  };
-
-  const dateLabel = (() => {
-    const d = new Date(dateInts.year, dateInts.month, dateInts.day);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    d.setHours(0, 0, 0, 0);
-    const diff = Math.round((d - today) / 86400000);
-    if (diff === 0) return "Today";
-    if (diff === 1) return "Tomorrow";
-    return d.toLocaleDateString("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    });
-  })();
+  }, [
+    validate, isEditing, editingTask, title, description,
+    timeInts, additionalTimes, dateInts, repeatType, selectedDays,
+    category, addTask, updateTask, showToast, navigation,
+  ]);
 
   return (
     <SafeAreaView style={s.container} edges={["top", "bottom"]}>
@@ -281,10 +377,25 @@ export default function AddTaskScreen({ navigation, route }) {
         onCancel={() => setErrorDialog(null)}
       />
 
+      <ConfirmDialog
+        visible={discardConfirm}
+        icon="arrow-back-outline"
+        title="Discard Changes?"
+        message="You have unsaved changes. Are you sure you want to go back?"
+        confirmLabel="Discard"
+        cancelLabel="Keep Editing"
+        destructive
+        onConfirm={() => {
+          setDiscardConfirm(false);
+          navigation.goBack();
+        }}
+        onCancel={() => setDiscardConfirm(false)}
+      />
+
       {/* Header */}
       <View style={s.header}>
         <TouchableOpacity
-          onPress={() => navigation.goBack()}
+          onPress={handleBack}
           style={s.backBtn}
           activeOpacity={0.72}
         >
@@ -306,6 +417,7 @@ export default function AddTaskScreen({ navigation, route }) {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
+          {/* Title */}
           <SectionLabel text="Title" required />
           <View style={s.inputCard}>
             <TextInput
@@ -319,6 +431,7 @@ export default function AddTaskScreen({ navigation, route }) {
             />
           </View>
 
+          {/* Description */}
           <SectionLabel text="Description" />
           <View style={s.inputCard}>
             <TextInput
@@ -333,6 +446,7 @@ export default function AddTaskScreen({ navigation, route }) {
             />
           </View>
 
+          {/* Category */}
           <SectionLabel text="Category" />
           <ScrollView
             horizontal
@@ -376,6 +490,7 @@ export default function AddTaskScreen({ navigation, route }) {
             })}
           </ScrollView>
 
+          {/* Repeat */}
           <SectionLabel text="Repeat" />
           <View style={s.repeatList}>
             {REPEATS.map((opt, idx) => {
@@ -434,6 +549,7 @@ export default function AddTaskScreen({ navigation, route }) {
             })}
           </View>
 
+          {/* Day selector (weekly) */}
           {repeatType === REPEAT_TYPES.WEEKLY && (
             <>
               <SectionLabel text="Days" required />
@@ -474,6 +590,7 @@ export default function AddTaskScreen({ navigation, route }) {
             </>
           )}
 
+          {/* Date (one-time) */}
           {repeatType === REPEAT_TYPES.ONCE && (
             <>
               <SectionLabel text="Date" />
@@ -483,25 +600,18 @@ export default function AddTaskScreen({ navigation, route }) {
                 activeOpacity={0.78}
               >
                 <View
-                  style={[
-                    s.pickerIconBox,
-                    { backgroundColor: COLORS.primary + "18" },
-                  ]}
+                  style={[s.pickerIconBox, { backgroundColor: COLORS.primary + "18" }]}
                 >
                   <Ionicons name="calendar" size={18} color={COLORS.primary} />
                 </View>
                 <Text style={s.pickerText}>{dateLabel}</Text>
-                <Ionicons
-                  name="chevron-forward"
-                  size={18}
-                  color={COLORS.textMuted}
-                />
+                <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
               </TouchableOpacity>
             </>
           )}
 
-          <SectionLabel text="Time" />
           {/* Primary time */}
+          <SectionLabel text="Time" />
           <TouchableOpacity
             style={[s.pickerCard, isPast && s.pickerCardWarn]}
             onPress={() => openTimePicker(null)}
@@ -510,10 +620,7 @@ export default function AddTaskScreen({ navigation, route }) {
             <View
               style={[
                 s.pickerIconBox,
-                {
-                  backgroundColor:
-                    (isPast ? COLORS.warning : COLORS.primary) + "18",
-                },
+                { backgroundColor: (isPast ? COLORS.warning : COLORS.primary) + "18" },
               ]}
             >
               <Ionicons
@@ -525,15 +632,10 @@ export default function AddTaskScreen({ navigation, route }) {
             <Text style={[s.pickerText, isPast && { color: COLORS.warning }]}>
               {timeDisplay12(timeInts.hour, timeInts.minute)}
             </Text>
-            {isPast && (
+            {isPast ? (
               <Ionicons name="warning" size={16} color={COLORS.warning} />
-            )}
-            {!isPast && (
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={COLORS.textMuted}
-              />
+            ) : (
+              <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
             )}
           </TouchableOpacity>
           {isPast && (
@@ -551,52 +653,33 @@ export default function AddTaskScreen({ navigation, route }) {
                 activeOpacity={0.78}
               >
                 <View
-                  style={[
-                    s.pickerIconBox,
-                    { backgroundColor: COLORS.primary + "18" },
-                  ]}
+                  style={[s.pickerIconBox, { backgroundColor: COLORS.primary + "18" }]}
                 >
-                  <Ionicons
-                    name="time-outline"
-                    size={18}
-                    color={COLORS.primary}
-                  />
+                  <Ionicons name="time-outline" size={18} color={COLORS.primary} />
                 </View>
                 <Text style={s.pickerText}>
                   {timeDisplay12(t.hour, t.minute)}
                 </Text>
-                <Ionicons
-                  name="chevron-forward"
-                  size={18}
-                  color={COLORS.textMuted}
-                />
+                <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
               </TouchableOpacity>
               <TouchableOpacity
                 style={s.removeTimeBtn}
                 onPress={() => removeExtraTime(idx)}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
-                <Ionicons
-                  name="close-circle"
-                  size={26}
-                  color={COLORS.error + "CC"}
-                />
+                <Ionicons name="close-circle" size={26} color={COLORS.error + "CC"} />
               </TouchableOpacity>
             </View>
           ))}
 
-          {/* Add another time button (max 5 times total) */}
+          {/* Add another time (max 5 total) */}
           {additionalTimes.length < 4 && (
             <TouchableOpacity
               style={s.addTimeBtn}
               onPress={addExtraTime}
               activeOpacity={0.78}
             >
-              <Ionicons
-                name="add-circle-outline"
-                size={18}
-                color={COLORS.primary}
-              />
+              <Ionicons name="add-circle-outline" size={18} color={COLORS.primary} />
               <Text style={s.addTimeTxt}>Add another time</Text>
             </TouchableOpacity>
           )}
@@ -605,6 +688,7 @@ export default function AddTaskScreen({ navigation, route }) {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* Save footer */}
       <View style={s.footer}>
         <TouchableOpacity
           onPress={handleSave}
@@ -640,13 +724,12 @@ export default function AddTaskScreen({ navigation, route }) {
         </TouchableOpacity>
       </View>
 
+      {/* Time picker sheet */}
       <SheetModal
         visible={showTimePicker}
         onClose={() => setShowTimePicker(false)}
         title={
-          timePickerIndex === null
-            ? "Select Time"
-            : `Time ${timePickerIndex + 2}`
+          timePickerIndex === null ? "Select Time" : `Time ${timePickerIndex + 2}`
         }
       >
         <TimePicker
@@ -656,6 +739,7 @@ export default function AddTaskScreen({ navigation, route }) {
         />
       </SheetModal>
 
+      {/* Date picker sheet */}
       <SheetModal
         visible={showDatePicker}
         onClose={() => setShowDatePicker(false)}
@@ -672,33 +756,6 @@ export default function AddTaskScreen({ navigation, route }) {
         />
       </SheetModal>
     </SafeAreaView>
-  );
-}
-
-function SectionLabel({ text, required }) {
-  return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        marginTop: SPACING.xl,
-        marginBottom: SPACING.sm,
-      }}
-    >
-      <View style={s.labelLine} />
-      <Text style={s.label}>{text}</Text>
-      {required && (
-        <Text
-          style={{
-            color: COLORS.error,
-            fontSize: FONTS.sizes.sm,
-            marginLeft: 2,
-          }}
-        >
-          *
-        </Text>
-      )}
-    </View>
   );
 }
 
@@ -735,21 +792,6 @@ const s = StyleSheet.create({
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.sm,
     paddingBottom: SPACING.xl,
-  },
-
-  labelLine: {
-    width: 3,
-    height: 14,
-    borderRadius: 2,
-    backgroundColor: COLORS.primary,
-    marginRight: SPACING.sm,
-  },
-  label: {
-    fontSize: 11,
-    fontWeight: FONTS.weights.bold,
-    color: COLORS.textSecondary,
-    textTransform: "uppercase",
-    letterSpacing: 1.2,
   },
 
   inputCard: {
@@ -825,11 +867,7 @@ const s = StyleSheet.create({
     fontWeight: FONTS.weights.medium,
     color: COLORS.textMuted,
   },
-  repeatSub: {
-    fontSize: FONTS.sizes.xs,
-    color: COLORS.textMuted,
-    marginTop: 1,
-  },
+  repeatSub: { fontSize: FONTS.sizes.xs, color: COLORS.textMuted, marginTop: 1 },
 
   daysRow: { flexDirection: "row", justifyContent: "space-between" },
   dayBtn: {
@@ -889,9 +927,7 @@ const s = StyleSheet.create({
     gap: SPACING.sm,
     marginTop: SPACING.sm,
   },
-  extraTimeCard: {
-    flex: 1,
-  },
+  extraTimeCard: { flex: 1 },
   removeTimeBtn: {
     width: 36,
     height: 36,

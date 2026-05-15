@@ -16,13 +16,13 @@ import { useToast } from "../context/ToastContext";
 import { TaskCard, EmptyState, StatsBar } from "../components/TaskCard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import NextUpBanner from "../components/NextUpBanner";
+import { isOneTimeFired } from "../utils/taskUtils";
 import {
   COLORS,
   FONTS,
   SPACING,
   RADIUS,
   SHADOWS,
-  REPEAT_TYPES,
 } from "../utils/theme";
 import { hapticLight, hapticMedium, hapticWarning } from "../utils/haptics";
 
@@ -32,6 +32,98 @@ const SORTS = [
   { id: "category", label: "Category", icon: "color-palette" },
 ];
 
+// ─── Greeting helper ───────────────────────────────────────────────────────────
+// Computed as a function (not a module-level constant) so it refreshes
+// correctly if the app is left open past a time boundary.
+function getGreetingInfo() {
+  const hour = new Date().getHours();
+  return {
+    greeting:
+      hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening",
+    today: new Date().toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+    }),
+  };
+}
+
+// ─── FiredSectionHeader — extracted component so it's not JSX inside useMemo ──
+function FiredSectionHeader({ count, expanded, onToggle, onClear }) {
+  if (count === 0) return null;
+  return (
+    <TouchableOpacity
+      style={s.firedHeader}
+      onPress={onToggle}
+      activeOpacity={0.75}
+    >
+      <View style={s.firedHeaderLeft}>
+        <View style={s.firedHeaderIconBox}>
+          <Ionicons name="checkmark-done-outline" size={12} color={COLORS.textMuted} />
+        </View>
+        <Text style={s.firedHeaderText}>Fired Reminders</Text>
+        <View style={s.firedBadge}>
+          <Text style={s.firedBadgeText}>{count}</Text>
+        </View>
+      </View>
+      <View style={s.firedHeaderRight}>
+        {expanded && (
+          <TouchableOpacity
+            onPress={onClear}
+            style={s.clearFiredBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="trash-outline" size={12} color={COLORS.error} />
+            <Text style={s.clearFiredBtnText}>Clear All</Text>
+          </TouchableOpacity>
+        )}
+        <Ionicons
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={14}
+          color={COLORS.textMuted}
+        />
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// ─── NoResults — extracted component ───────────────────────────────────────────
+function NoResults({ searchQuery, filterActive, onAdd }) {
+  if (searchQuery) {
+    return (
+      <View style={s.noResults}>
+        <Ionicons name="search" size={36} color={COLORS.textMuted} style={{ marginBottom: 12 }} />
+        <Text style={s.noResultsTitle}>No results</Text>
+        <Text style={s.noResultsSub}>for "{searchQuery}"</Text>
+      </View>
+    );
+  }
+  if (filterActive === "active") {
+    return (
+      <View style={s.noResults}>
+        <Ionicons name="checkmark-circle" size={42} color={COLORS.textMuted} style={{ marginBottom: 14 }} />
+        <Text style={s.noResultsTitle}>No Active Reminders</Text>
+        <Text style={s.noResultsSub}>
+          All your reminders are paused{"\n"}or none have been created yet.
+        </Text>
+      </View>
+    );
+  }
+  if (filterActive === "inactive") {
+    return (
+      <View style={s.noResults}>
+        <Ionicons name="pause-circle" size={42} color={COLORS.textMuted} style={{ marginBottom: 14 }} />
+        <Text style={s.noResultsTitle}>No Paused Reminders</Text>
+        <Text style={s.noResultsSub}>
+          All your reminders are active{"\n"}and running on schedule.
+        </Text>
+      </View>
+    );
+  }
+  return <EmptyState onAdd={onAdd} />;
+}
+
+// ─── Main Screen ───────────────────────────────────────────────────────────────
 export default function HomeScreen({ navigation }) {
   const {
     tasks,
@@ -42,6 +134,7 @@ export default function HomeScreen({ navigation }) {
     permissionsGranted,
   } = useTasks();
   const { showToast } = useToast();
+
   const [searchQuery, setSearchQuery] = useState("");
   const [filterActive, setFilterActive] = useState("all");
   const [sortBy, setSortBy] = useState("created");
@@ -51,32 +144,13 @@ export default function HomeScreen({ navigation }) {
   const [clearFiredConfirm, setClearFiredConfirm] = useState(false);
   const inputRef = useRef(null);
 
-  const isFired = useCallback((t) => {
-    if (t.repeatType !== REPEAT_TYPES.ONCE) return false;
-    const now = new Date();
-    // For multi-time tasks, fired only when the LAST slot has passed
-    const allSlots = [
-      { hour: t.timeHour ?? 0, minute: t.timeMinute ?? 0 },
-      ...(t.additionalTimes || []),
-    ];
-    const last = allSlots.reduce((a, b) =>
-      b.hour * 60 + b.minute > a.hour * 60 + a.minute ? b : a,
-    );
-    const fireAt = new Date(
-      t.dateYear ?? now.getFullYear(),
-      t.dateMonth ?? now.getMonth(),
-      t.dateDay ?? now.getDate(),
-      last.hour,
-      last.minute,
-      0,
-      0,
-    );
-    return fireAt <= now;
-  }, []);
+  // Recomputed on every render so greeting stays accurate if app
+  // is open past midnight — negligible cost for a date object creation.
+  const { greeting, today } = getGreetingInfo();
 
   const { upcomingTasks, firedTasks } = useMemo(() => {
     const q = searchQuery.toLowerCase();
-    let result = tasks.filter((t) => {
+    const filtered = tasks.filter((t) => {
       const matchSearch =
         !q ||
         t.title.toLowerCase().includes(q) ||
@@ -91,12 +165,16 @@ export default function HomeScreen({ navigation }) {
 
     const sorter = (a, b) => {
       if (sortBy === "time") {
-        const aH = (a.timeHour ?? 0) * 60 + (a.timeMinute ?? 0);
-        const bH = (b.timeHour ?? 0) * 60 + (b.timeMinute ?? 0);
-        return aH - bH;
+        return (
+          (a.timeHour ?? 0) * 60 +
+          (a.timeMinute ?? 0) -
+          ((b.timeHour ?? 0) * 60 + (b.timeMinute ?? 0))
+        );
       }
-      if (sortBy === "category")
+      if (sortBy === "category") {
         return (a.category || "").localeCompare(b.category || "");
+      }
+      // Default: newest first by createdAt or id timestamp
       const getTs = (t) => {
         if (t.createdAt) return new Date(t.createdAt).getTime();
         const parts = (t.id || "").split("_");
@@ -106,29 +184,23 @@ export default function HomeScreen({ navigation }) {
       return getTs(b) - getTs(a);
     };
 
-    const upcoming = result.filter((t) => !isFired(t)).sort(sorter);
-    const fired = result
-      .filter((t) => isFired(t))
+    const upcoming = filtered.filter((t) => !isOneTimeFired(t)).sort(sorter);
+    const fired = filtered
+      .filter((t) => isOneTimeFired(t))
       .sort((a, b) => {
         const fa = new Date(
-          a.dateYear ?? 0,
-          a.dateMonth ?? 0,
-          a.dateDay ?? 1,
-          a.timeHour ?? 0,
-          a.timeMinute ?? 0,
+          a.dateYear ?? 0, a.dateMonth ?? 0, a.dateDay ?? 1,
+          a.timeHour ?? 0, a.timeMinute ?? 0,
         );
         const fb = new Date(
-          b.dateYear ?? 0,
-          b.dateMonth ?? 0,
-          b.dateDay ?? 1,
-          b.timeHour ?? 0,
-          b.timeMinute ?? 0,
+          b.dateYear ?? 0, b.dateMonth ?? 0, b.dateDay ?? 1,
+          b.timeHour ?? 0, b.timeMinute ?? 0,
         );
         return fb - fa;
       });
 
     return { upcomingTasks: upcoming, firedTasks: fired };
-  }, [tasks, searchQuery, filterActive, sortBy, isFired]);
+  }, [tasks, searchQuery, filterActive, sortBy]);
 
   const { activeCount, pausedCount } = useMemo(
     () => ({
@@ -152,6 +224,7 @@ export default function HomeScreen({ navigation }) {
     [tasks.length, activeCount, pausedCount],
   );
 
+  // ─── Handlers ───────────────────────────────────────────────────────────────
   const handleDeleteRequest = useCallback(
     (id) => {
       hapticLight();
@@ -189,11 +262,7 @@ export default function HomeScreen({ navigation }) {
     const count = firedTasks.length;
     await clearFiredTasks();
     setClearFiredConfirm(false);
-    showToast(
-      "warning",
-      "Cleared",
-      `${count} fired reminder${count !== 1 ? "s" : ""} removed`,
-    );
+    showToast("warning", "Cleared", `${count} fired reminder${count !== 1 ? "s" : ""} removed`);
   }, [firedTasks.length, clearFiredTasks, showToast]);
 
   const handleEdit = useCallback(
@@ -203,10 +272,21 @@ export default function HomeScreen({ navigation }) {
     },
     [navigation],
   );
+
   const handleAdd = useCallback(() => {
     hapticLight();
     navigation.navigate("AddTask", { task: null });
   }, [navigation]);
+
+  const handleFiredToggle = useCallback(() => {
+    hapticLight();
+    setFiredExpanded((v) => !v);
+  }, []);
+
+  const handleClearFiredRequest = useCallback(() => {
+    hapticLight();
+    setClearFiredConfirm(true);
+  }, []);
 
   const renderTask = useCallback(
     ({ item }) => (
@@ -222,117 +302,41 @@ export default function HomeScreen({ navigation }) {
 
   const keyExtractor = useCallback((item) => item.id, []);
 
-  const { greeting, today } = useMemo(() => {
-    const hour = new Date().getHours();
-    return {
-      greeting:
-        hour < 12
-          ? "Good morning"
-          : hour < 17
-            ? "Good afternoon"
-            : "Good evening",
-      today: new Date().toLocaleDateString("en-US", {
-        weekday: "long",
-        month: "short",
-        day: "numeric",
-      }),
-    };
-  }, []);
+  const isListEmpty = upcomingTasks.length === 0 && firedTasks.length === 0;
 
-  const ListEmpty = useMemo(() => {
-    if (searchQuery)
-      return (
-        <View style={s.noResults}>
-          <Ionicons
-            name="search"
-            size={36}
-            color={COLORS.textMuted}
-            style={{ marginBottom: 12 }}
-          />
-          <Text style={s.noResultsTitle}>No results</Text>
-          <Text style={s.noResultsSub}>for "{searchQuery}"</Text>
-        </View>
-      );
-    if (filterActive === "active")
-      return (
-        <View style={s.noResults}>
-          <Ionicons
-            name="checkmark-circle"
-            size={42}
-            color={COLORS.textMuted}
-            style={{ marginBottom: 14 }}
-          />
-          <Text style={s.noResultsTitle}>No Active Reminders</Text>
-          <Text style={s.noResultsSub}>
-            All your reminders are paused{"\n"}or none have been created yet.
-          </Text>
-        </View>
-      );
-    if (filterActive === "inactive")
-      return (
-        <View style={s.noResults}>
-          <Ionicons
-            name="pause-circle"
-            size={42}
-            color={COLORS.textMuted}
-            style={{ marginBottom: 14 }}
-          />
-          <Text style={s.noResultsTitle}>No Paused Reminders</Text>
-          <Text style={s.noResultsSub}>
-            All your reminders are active{"\n"}and running on schedule.
-          </Text>
-        </View>
-      );
-    return <EmptyState onAdd={handleAdd} />;
-  }, [searchQuery, filterActive, handleAdd]);
-
-  const FiredSectionHeader = useMemo(() => {
-    if (firedTasks.length === 0) return null;
-    return (
-      <TouchableOpacity
-        style={s.firedHeader}
-        onPress={() => {
-          hapticLight();
-          setFiredExpanded((v) => !v);
-        }}
-        activeOpacity={0.75}
-      >
-        <View style={s.firedHeaderLeft}>
-          <View style={s.firedHeaderIconBox}>
-            <Ionicons
-              name="checkmark-done-outline"
-              size={12}
-              color={COLORS.textMuted}
+  const ListFooter = useMemo(
+    () => (
+      <>
+        <FiredSectionHeader
+          count={firedTasks.length}
+          expanded={firedExpanded}
+          onToggle={handleFiredToggle}
+          onClear={handleClearFiredRequest}
+        />
+        {firedExpanded &&
+          firedTasks.map((item) => (
+            <TaskCard
+              key={item.id}
+              task={item}
+              onToggle={handleToggle}
+              onEdit={handleEdit}
+              onDelete={handleDeleteRequest}
+              fired
             />
-          </View>
-          <Text style={s.firedHeaderText}>Fired Reminders</Text>
-          <View style={s.firedBadge}>
-            <Text style={s.firedBadgeText}>{firedTasks.length}</Text>
-          </View>
-        </View>
-        <View style={s.firedHeaderRight}>
-          {firedExpanded && (
-            <TouchableOpacity
-              onPress={() => {
-                hapticLight();
-                setClearFiredConfirm(true);
-              }}
-              style={s.clearFiredBtn}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name="trash-outline" size={12} color={COLORS.error} />
-              <Text style={s.clearFiredBtnText}>Clear All</Text>
-            </TouchableOpacity>
-          )}
-          <Ionicons
-            name={firedExpanded ? "chevron-up" : "chevron-down"}
-            size={14}
-            color={COLORS.textMuted}
-          />
-        </View>
-      </TouchableOpacity>
-    );
-  }, [firedTasks.length, firedExpanded]);
+          ))}
+        <View style={{ height: SPACING.xxxl }} />
+      </>
+    ),
+    [
+      firedTasks,
+      firedExpanded,
+      handleFiredToggle,
+      handleClearFiredRequest,
+      handleToggle,
+      handleEdit,
+      handleDeleteRequest,
+    ],
+  );
 
   return (
     <SafeAreaView style={s.container} edges={["top"]}>
@@ -407,9 +411,15 @@ export default function HomeScreen({ navigation }) {
       )}
 
       {/* Stats */}
-      {tasks.length > 0 && <StatsBar tasks={tasks} />}
+      {tasks.length > 0 && (
+        <StatsBar
+          total={tasks.length}
+          active={activeCount}
+          paused={pausedCount}
+        />
+      )}
 
-      {/* Next Up — active tasks only */}
+      {/* Next Up */}
       {!searchQuery && nextActiveBanner && (
         <NextUpBanner task={nextActiveBanner} onPress={handleEdit} />
       )}
@@ -519,33 +529,15 @@ export default function HomeScreen({ navigation }) {
           data={upcomingTasks}
           keyExtractor={keyExtractor}
           renderItem={renderTask}
-          ListEmptyComponent={
-            upcomingTasks.length === 0 && firedTasks.length === 0
-              ? ListEmpty
-              : null
-          }
-          ListFooterComponent={
-            <>
-              {FiredSectionHeader}
-              {firedExpanded &&
-                firedTasks.map((item) => (
-                  <TaskCard
-                    key={item.id}
-                    task={item}
-                    onToggle={handleToggle}
-                    onEdit={handleEdit}
-                    onDelete={handleDeleteRequest}
-                    fired
-                  />
-                ))}
-              <View style={{ height: SPACING.xxxl }} />
-            </>
-          }
-          contentContainerStyle={[
-            s.list,
-            upcomingTasks.length === 0 &&
-              firedTasks.length === 0 && { flex: 1 },
-          ]}
+          ListEmptyComponent={isListEmpty ? (
+            <NoResults
+              searchQuery={searchQuery}
+              filterActive={filterActive}
+              onAdd={handleAdd}
+            />
+          ) : null}
+          ListFooterComponent={ListFooter}
+          contentContainerStyle={[s.list, isListEmpty && { flex: 1 }]}
           showsVerticalScrollIndicator={false}
           removeClippedSubviews
           windowSize={7}
@@ -607,7 +599,6 @@ const s = StyleSheet.create({
     gap: SPACING.sm,
     paddingTop: 6,
   },
-
   iconBtn: {
     width: 40,
     height: 40,
@@ -688,7 +679,6 @@ const s = StyleSheet.create({
     marginBottom: SPACING.md,
     gap: SPACING.sm,
   },
-
   segmentContainer: {
     flexDirection: "row",
     backgroundColor: COLORS.surface,

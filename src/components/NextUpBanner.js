@@ -11,7 +11,7 @@ import {
   formatTaskTime,
 } from "../utils/theme";
 
-export default function NextUpBanner({ task, onPress }) {
+export default React.memo(function NextUpBanner({ task, onPress }) {
   if (!task) return null;
   const meta = getCategoryMeta(task.category);
 
@@ -81,7 +81,7 @@ export default function NextUpBanner({ task, onPress }) {
       </LinearGradient>
     </TouchableOpacity>
   );
-}
+});
 
 const s = StyleSheet.create({
   banner: {

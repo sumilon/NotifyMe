@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useMemo } from "react";
+import React, { useRef, useEffect, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -43,28 +43,35 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
     ]);
     anim.start();
     return () => anim.stop();
-  }, []);
+  }, []); // run once on mount
 
-  const handlePressIn = () =>
+  // Stable press handlers — defined with useCallback so they don't
+  // cause child re-renders when the parent re-renders.
+  const handlePressIn = useCallback(() => {
     Animated.spring(scaleAnim, {
       toValue: 0.972,
       tension: 300,
       friction: 20,
       useNativeDriver: true,
     }).start();
-  const handlePressOut = () =>
+  }, [scaleAnim]);
+
+  const handlePressOut = useCallback(() => {
     Animated.spring(scaleAnim, {
       toValue: 1,
       tension: 300,
       friction: 20,
       useNativeDriver: true,
     }).start();
+  }, [scaleAnim]);
 
-  // useMemo for derived display values so they don't recompute on unrelated re-renders
+  const handleEdit = useCallback(() => onEdit(task), [onEdit, task]);
+  const handleDelete = useCallback(() => onDelete(task.id), [onDelete, task.id]);
+  const handleToggle = useCallback(() => onToggle(task.id), [onToggle, task.id]);
+
   const { timeDisplay, repeatLabel, accent, iconName, inactive } =
     useMemo(() => {
       const cat = getCategoryMeta(task.category);
-      // formatTaskTime reads task.timeHour / task.timeMinute (local integers) — never UTC ISO
       const timeDisp = formatTaskTime(task);
 
       const repeat = (() => {
@@ -76,7 +83,6 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
             .map((d) => DAYS_OF_WEEK[d]?.full?.slice(0, 3))
             .join(", ");
         }
-        // ONCE — uses local date integers (post-migration always present)
         if (task.dateYear !== undefined) {
           const d = new Date(task.dateYear, task.dateMonth, task.dateDay);
           return d.toLocaleDateString("en-US", {
@@ -106,7 +112,7 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
     >
       <TouchableOpacity
         activeOpacity={1}
-        onPress={() => onEdit(task)}
+        onPress={handleEdit}
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
         style={styles.touchable}
@@ -132,7 +138,7 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
             ]}
           />
           <View style={styles.cardInner}>
-            {/* Header */}
+            {/* Header row */}
             <View style={styles.headerRow}>
               <View
                 style={[
@@ -181,7 +187,7 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
               {!fired && (
                 <Switch
                   value={task.isActive}
-                  onValueChange={() => onToggle(task.id)}
+                  onValueChange={handleToggle}
                   trackColor={{
                     false: COLORS.surfaceHigh,
                     true: accent + "55",
@@ -201,14 +207,15 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
                   inactive && styles.descInactive,
                   fired && styles.descFired,
                 ]}
-                numberOfLines={1}
+                numberOfLines={2}
               >
                 {task.description}
               </Text>
             )}
 
-            {/* Footer */}
+            {/* Footer row */}
             <View style={styles.footerRow}>
+              {/* Time pill */}
               <View
                 style={[
                   styles.timePill,
@@ -216,14 +223,14 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
                     backgroundColor: fired
                       ? COLORS.surfaceMid
                       : inactive
-                        ? COLORS.border
+                        ? COLORS.surfaceHigh
                         : accent + "18",
                   },
                 ]}
               >
                 <Ionicons
                   name="time"
-                  size={11}
+                  size={10}
                   color={
                     fired
                       ? COLORS.textTertiary
@@ -231,7 +238,7 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
                         ? COLORS.textMuted
                         : accent
                   }
-                  style={{ marginRight: 4 }}
+                  style={{ marginRight: 3 }}
                 />
                 <Text
                   style={[
@@ -244,59 +251,62 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
                           : accent,
                     },
                   ]}
-                  numberOfLines={1}
                 >
                   {timeDisplay}
                 </Text>
-                {task.additionalTimes?.length > 0 && (
+                {/* Extra times badge */}
+                {(task.additionalTimes?.length ?? 0) > 0 && (
                   <View
                     style={[
                       styles.timesCountBadge,
-                      { backgroundColor: accent + "30" },
+                      {
+                        backgroundColor: fired
+                          ? COLORS.surfaceHigh
+                          : accent + "28",
+                      },
                     ]}
                   >
                     <Text
                       style={[
                         styles.timesCountText,
                         {
-                          color: fired
-                            ? COLORS.textTertiary
-                            : inactive
-                              ? COLORS.textMuted
-                              : accent,
+                          color: fired ? COLORS.textTertiary : accent,
                         },
                       ]}
                     >
-                      ×{task.additionalTimes.length + 1}
+                      +{task.additionalTimes.length}
                     </Text>
                   </View>
                 )}
               </View>
+
+              {/* Repeat / date label */}
               <View style={styles.repeatPill}>
                 <Ionicons
                   name="repeat"
-                  size={11}
-                  color={fired ? COLORS.textTertiary : COLORS.textMuted}
-                  style={{ marginRight: 3 }}
+                  size={10}
+                  color={COLORS.textMuted}
+                  style={{ marginRight: 4 }}
                 />
                 <Text
-                  style={[styles.repeatText, fired && styles.repeatTextFired]}
+                  style={[
+                    styles.repeatText,
+                    fired && styles.repeatTextFired,
+                  ]}
                   numberOfLines={1}
                 >
                   {repeatLabel}
                 </Text>
               </View>
+
+              {/* Delete button */}
               <TouchableOpacity
+                onPress={handleDelete}
                 style={styles.deleteBtn}
-                onPress={() => onDelete(task.id)}
-                hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <View style={styles.deleteBtnInner}>
-                  <Ionicons
-                    name="trash"
-                    size={14}
-                    color={fired ? COLORS.textTertiary : COLORS.textMuted}
-                  />
+                  <Ionicons name="trash-outline" size={14} color={COLORS.textMuted} />
                 </View>
               </TouchableOpacity>
             </View>
@@ -309,52 +319,46 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
 
 // ─── EmptyState ────────────────────────────────────────────────────────────────
 export function EmptyState({ onAdd }) {
-  const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const ringAnim = useRef(new Animated.Value(0.85)).current;
+  const ringAnim = useRef(new Animated.Value(0.8)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    const fade = Animated.timing(fadeAnim, {
+    Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 600,
       useNativeDriver: true,
-    });
-    const pulse = Animated.loop(
+    }).start();
+
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(ringAnim, {
+          toValue: 1.08,
+          duration: 2200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(ringAnim, {
+          toValue: 0.8,
+          duration: 2200,
+          useNativeDriver: true,
+        }),
+      ]),
+    ).start();
+
+    Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
           toValue: 1.05,
-          duration: 2400,
+          duration: 1800,
           useNativeDriver: true,
         }),
         Animated.timing(pulseAnim, {
           toValue: 1,
-          duration: 2400,
+          duration: 1800,
           useNativeDriver: true,
         }),
       ]),
-    );
-    const ring = Animated.loop(
-      Animated.sequence([
-        Animated.timing(ringAnim, {
-          toValue: 1.15,
-          duration: 3000,
-          useNativeDriver: true,
-        }),
-        Animated.timing(ringAnim, {
-          toValue: 0.85,
-          duration: 3000,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    fade.start();
-    pulse.start();
-    ring.start();
-    return () => {
-      fade.stop();
-      pulse.stop();
-      ring.stop();
-    };
+    ).start();
   }, []);
 
   return (
@@ -397,17 +401,9 @@ export function EmptyState({ onAdd }) {
 }
 
 // ─── StatsBar ──────────────────────────────────────────────────────────────────
-export function StatsBar({ tasks }) {
-  // useMemo: only recompute when tasks array reference changes
-  const { total, active, paused } = useMemo(
-    () => ({
-      total: tasks.length,
-      active: tasks.filter((t) => t.isActive).length,
-      paused: tasks.filter((t) => !t.isActive).length,
-    }),
-    [tasks],
-  );
-
+// Accepts pre-computed counts from HomeScreen to avoid re-filtering the task
+// array here (HomeScreen already has activeCount/pausedCount in useMemo).
+export const StatsBar = React.memo(function StatsBar({ total, active, paused }) {
   const stats = [
     { label: "Total", value: total, color: COLORS.primary, icon: "layers" },
     {
@@ -443,7 +439,7 @@ export function StatsBar({ tasks }) {
       ))}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   touchable: { marginHorizontal: SPACING.lg, marginBottom: 10 },
@@ -457,7 +453,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
   },
   cardInactive: { opacity: 0.58 },
-  cardFired: { opacity: 0.72 }, // raised from 0.42 — more readable
+  cardFired: { opacity: 0.72 },
   accentStripe: { width: 3, alignSelf: "stretch" },
   cardInner: {
     flex: 1,
@@ -518,10 +514,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.15,
   },
   titleInactive: { color: COLORS.textMuted },
-  titleFired: {
-    color: COLORS.textSecondary,
-    textDecorationLine: "line-through",
-  }, // brighter than textMuted
+  titleFired: { color: COLORS.textSecondary, textDecorationLine: "line-through" },
   toggle: { transform: [{ scaleX: 0.82 }, { scaleY: 0.82 }], marginRight: -4 },
 
   desc: {

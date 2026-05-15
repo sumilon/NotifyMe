@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, Animated, Platform } from "react-native";
+import { View, Text, StyleSheet, Animated } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, FONTS, SPACING, RADIUS } from "../utils/theme";
 
@@ -30,62 +31,99 @@ const CONFIGS = {
   },
 };
 
+// Animation duration constants
+const ANIM_IN_DURATION = 180;
+const ANIM_OUT_DURATION = 300;
+// Must match the timeout in ToastContext so the out animation plays
+// just before the context nulls the toast.
+const DISPLAY_DURATION = 3500;
+const TOAST_HEIGHT = 80; // generous estimate; keeps toast fully off-screen
+
 export default function Toast({ toast }) {
-  const ty = useRef(new Animated.Value(-110)).current;
+  const insets = useSafeAreaInsets();
+  const ty = useRef(new Animated.Value(-(TOAST_HEIGHT + insets.top))).current;
   const op = useRef(new Animated.Value(0)).current;
+
+  // Animated refs so we can stop in-flight animations on cleanup
+  const inAnimRef = useRef(null);
+  const outAnimRef = useRef(null);
+  const outTimerRef = useRef(null);
 
   useEffect(() => {
     if (!toast) return;
-    ty.setValue(-110);
+
+    // Reset position before animating in
+    ty.setValue(-(TOAST_HEIGHT + insets.top));
     op.setValue(0);
-    const inAnim = Animated.parallel([
+
+    // Stop any in-flight out animation
+    outAnimRef.current?.stop();
+    clearTimeout(outTimerRef.current);
+
+    inAnimRef.current = Animated.parallel([
       Animated.spring(ty, {
         toValue: 0,
         tension: 65,
         friction: 11,
         useNativeDriver: true,
       }),
-      Animated.timing(op, { toValue: 1, duration: 180, useNativeDriver: true }),
+      Animated.timing(op, {
+        toValue: 1,
+        duration: ANIM_IN_DURATION,
+        useNativeDriver: true,
+      }),
     ]);
-    inAnim.start();
-    const t = setTimeout(() => {
-      const outAnim = Animated.parallel([
+    inAnimRef.current.start();
+
+    // Schedule exit animation slightly before ToastContext nulls the toast,
+    // so the visual slide-out plays smoothly without a jump.
+    outTimerRef.current = setTimeout(() => {
+      outAnimRef.current = Animated.parallel([
         Animated.timing(ty, {
-          toValue: -110,
-          duration: 300,
+          toValue: -(TOAST_HEIGHT + insets.top),
+          duration: ANIM_OUT_DURATION,
           useNativeDriver: true,
         }),
         Animated.timing(op, {
           toValue: 0,
-          duration: 300,
+          duration: ANIM_OUT_DURATION,
           useNativeDriver: true,
         }),
       ]);
-      outAnim.start();
-    }, 3500);
+      outAnimRef.current.start();
+    }, DISPLAY_DURATION - ANIM_OUT_DURATION);
+
     return () => {
-      clearTimeout(t);
-      inAnim.stop();
+      inAnimRef.current?.stop();
+      outAnimRef.current?.stop();
+      clearTimeout(outTimerRef.current);
     };
-  }, [toast]);
+  }, [toast, insets.top]); // insets.top included: orientation/keyboard changes can update safe area
 
   if (!toast) return null;
   const cfg = CONFIGS[toast.type] || CONFIGS.info;
+
+  // top offset: safe area inset + a small breathing gap
+  const topOffset = insets.top + 8;
 
   return (
     <Animated.View
       style={[
         s.wrap,
         {
+          top: topOffset,
           borderColor: cfg.border + "40",
           transform: [{ translateY: ty }],
           opacity: op,
         },
       ]}
+      pointerEvents="none"
     >
       <Ionicons name={cfg.icon} size={20} color={cfg.iconColor} />
       <View style={{ flex: 1 }}>
-        <Text style={s.title}>{toast.title}</Text>
+        <Text style={s.title} numberOfLines={1}>
+          {toast.title}
+        </Text>
         {!!toast.message && (
           <Text style={s.msg} numberOfLines={1}>
             {toast.message}
@@ -99,7 +137,6 @@ export default function Toast({ toast }) {
 const s = StyleSheet.create({
   wrap: {
     position: "absolute",
-    top: Platform.OS === "ios" ? 60 : 48,
     left: SPACING.lg,
     right: SPACING.lg,
     zIndex: 9999,

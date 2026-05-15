@@ -8,30 +8,38 @@ const TASKS_KEY = "@notifyme_tasks";
  * timezone bugs. New tasks use plain local integers (timeHour, timeMinute,
  * dateYear, dateMonth, dateDay). This migration runs once on load and
  * strips the legacy ISO fields entirely.
+ *
+ * Returns the same object reference if no migration was needed,
+ * making it safe to check `m !== t` for change detection.
  */
 function migrateTask(t) {
   if (!t) return t;
-  const hasIntegers =
+
+  const hasTimeInts =
     typeof t.timeHour === "number" && typeof t.timeMinute === "number";
   const hasDateInts = typeof t.dateYear === "number";
+  const hasLegacyFields = "time" in t || "date" in t;
 
-  // Already migrated → strip any leftover ISO fields just in case
-  if (hasIntegers && (hasDateInts || t.repeatType !== "once")) {
-    if (t.time === undefined && t.date === undefined) return t; // truly clean
-    const { time, date, ...clean } = t;
+  // Fully migrated and clean — return same reference (no unnecessary array copy)
+  if (hasTimeInts && (hasDateInts || t.repeatType !== "once") && !hasLegacyFields) {
+    return t;
+  }
+
+  // Strip leftover ISO fields from an otherwise migrated task
+  if (hasTimeInts && (hasDateInts || t.repeatType !== "once") && hasLegacyFields) {
+    const { time: _t, date: _d, ...clean } = t;
     return clean;
   }
 
-  const migrated = { ...t };
+  // Full migration from ISO strings to local integers
+  const { time: _legacyTime, date: _legacyDate, ...migrated } = t;
 
-  // Migrate time
-  if (!hasIntegers && t.time) {
+  if (!hasTimeInts && t.time) {
     const d = new Date(t.time);
     migrated.timeHour = d.getHours();
     migrated.timeMinute = d.getMinutes();
   }
 
-  // Migrate date (only meaningful for one-time)
   if (!hasDateInts && t.date) {
     const d = new Date(t.date);
     migrated.dateYear = d.getFullYear();
@@ -39,15 +47,12 @@ function migrateTask(t) {
     migrated.dateDay = d.getDate();
   }
 
-  // Strip legacy ISO fields
-  delete migrated.time;
-  delete migrated.date;
   return migrated;
 }
 
 /**
  * Save tasks to AsyncStorage.
- * Returns true on success, false on failure (so caller can surface a toast).
+ * Returns true on success, false on failure (caller can surface a toast).
  */
 export async function saveTasks(tasks) {
   try {
@@ -66,7 +71,6 @@ export async function loadTasks() {
     const raw = JSON.parse(json);
     if (!Array.isArray(raw)) return [];
 
-    // Run migration & detect if anything changed
     let changed = false;
     const migrated = raw.map((t) => {
       const m = migrateTask(t);
@@ -74,7 +78,7 @@ export async function loadTasks() {
       return m;
     });
 
-    // Persist migrated form so the migration runs only once
+    // Persist migrated form once so migration only runs on first load
     if (changed) {
       try {
         await AsyncStorage.setItem(TASKS_KEY, JSON.stringify(migrated));

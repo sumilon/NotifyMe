@@ -18,7 +18,8 @@ import {
   cancelAllNotifications,
   requestNotificationPermissions,
 } from "../utils/notificationService";
-import { generateId, REPEAT_TYPES } from "../utils/theme";
+import { generateId } from "../utils/theme";
+import { isOneTimeFired } from "../utils/taskUtils";
 import { useToast } from "./ToastContext";
 
 const TaskContext = createContext(null);
@@ -54,80 +55,56 @@ function taskReducer(state, action) {
   }
 }
 
-/**
- * Returns true if a one-time task's fire time has already passed.
- * Used both for auto-deactivation on launch and for "Clear all fired".
- */
-function isOneTimeFired(t) {
-  if (t.repeatType !== REPEAT_TYPES.ONCE) return false;
-  if (t.timeHour === undefined || t.dateYear === undefined) return false;
-  // For multi-time tasks, fired only when the LAST slot has passed
-  const allSlots = [
-    { hour: t.timeHour, minute: t.timeMinute ?? 0 },
-    ...(t.additionalTimes || []),
-  ];
-  const last = allSlots.reduce((a, b) =>
-    b.hour * 60 + b.minute > a.hour * 60 + a.minute ? b : a,
-  );
-  const fireAt = new Date(
-    t.dateYear,
-    t.dateMonth,
-    t.dateDay,
-    last.hour,
-    last.minute,
-    0,
-    0,
-  );
-  return fireAt <= new Date();
-}
-
 export function TaskProvider({ children }) {
   const [state, dispatch] = useReducer(taskReducer, initialState);
   const { showToast } = useToast();
 
-  // Mirror state into a ref so AppState listener has access to latest values
-  // without needing to re-subscribe on every render.
+  // Keep a ref so callbacks always read latest state without re-subscribing.
+  // This is the key pattern to avoid stale closures in AppState listeners
+  // and to keep useCallback deps minimal.
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
+  // ─── Initialise ─────────────────────────────────────────────────────────────
   useEffect(() => {
     initializeApp();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Persist tasks on every change. Show a toast if save fails.
+  // ─── Persist on change ──────────────────────────────────────────────────────
   useEffect(() => {
     if (state.loading) return;
     (async () => {
       const ok = await saveTasks(state.tasks);
-      if (!ok)
+      if (!ok) {
         showToast(
           "error",
           "Save failed",
           "Could not save your changes — storage may be full.",
         );
+      }
     })();
-  }, [state.tasks, state.loading]);
+  }, [state.tasks, state.loading]); // showToast is stable (useMemo'd in ToastContext)
 
-  // Re-check permissions when app returns to foreground.
-  // If permissions were just granted, reschedule any active tasks that
-  // missed scheduling because permission was previously denied.
+  // ─── Re-check permissions on foreground ─────────────────────────────────────
   useEffect(() => {
     const sub = AppState.addEventListener("change", async (nextState) => {
       if (nextState !== "active") return;
+
       const wasGranted = stateRef.current.permissionsGranted;
       const granted = await requestNotificationPermissions();
+
       if (granted !== wasGranted) {
         dispatch({ type: "SET_PERMISSIONS", payload: granted });
       }
+
+      // If permission was just granted, schedule any active tasks that
+      // missed scheduling because permission was previously denied.
       if (granted && !wasGranted) {
         const tasks = stateRef.current.tasks;
         for (const t of tasks) {
-          if (
-            t.isActive &&
-            (!t.notificationIds || t.notificationIds.length === 0)
-          ) {
+          if (t.isActive && (!t.notificationIds || t.notificationIds.length === 0)) {
             try {
               const ids = await scheduleNotification(t);
               dispatch({
@@ -142,15 +119,16 @@ export function TaskProvider({ children }) {
       }
     });
     return () => sub.remove();
-  }, []);
+  }, []); // Uses stateRef — no deps needed
 
+  // ─── Init ───────────────────────────────────────────────────────────────────
   async function initializeApp() {
     const granted = await requestNotificationPermissions();
     dispatch({ type: "SET_PERMISSIONS", payload: granted });
 
     let tasks = await loadTasks();
 
-    // Auto-deactivate one-time tasks whose fire time has passed.
+    // Auto-deactivate one-time tasks whose fire time has passed
     let changed = false;
     tasks = tasks.map((t) => {
       if (t.isActive && isOneTimeFired(t)) {
@@ -164,60 +142,86 @@ export function TaskProvider({ children }) {
     if (changed) await saveTasks(tasks);
   }
 
-  const addTask = useCallback(
-    async (taskData) => {
-      const id = generateId("task");
-      let notificationIds = [];
-      if (state.permissionsGranted) {
-        try {
-          notificationIds = await scheduleNotification({ ...taskData, id });
-        } catch (e) {
-          console.error("Schedule error:", e);
-        }
-      }
-      const newTask = {
-        ...taskData,
-        id,
-        notificationIds,
-        isActive: true,
-        createdAt: new Date().toISOString(),
-      };
-      dispatch({ type: "ADD_TASK", payload: newTask });
-      return newTask;
-    },
-    [state.permissionsGranted],
-  );
+  // ─── Actions ────────────────────────────────────────────────────────────────
+  // NOTE: All actions read permissions/tasks from stateRef so they don't need
+  // those values in their useCallback deps, keeping dep arrays minimal and
+  // preventing unnecessary re-renders of consumers.
 
-  const updateTask = useCallback(
-    async (taskData) => {
-      const existing = state.tasks.find((t) => t.id === taskData.id);
-      if (existing?.notificationIds?.length)
-        await cancelNotification(existing.notificationIds);
+  const addTask = useCallback(async (taskData) => {
+    const id = generateId("task");
+    let notificationIds = [];
+    if (stateRef.current.permissionsGranted) {
+      try {
+        notificationIds = await scheduleNotification({ ...taskData, id });
+      } catch (e) {
+        console.error("Schedule error:", e);
+      }
+    }
+    const newTask = {
+      ...taskData,
+      id,
+      notificationIds,
+      isActive: true,
+      createdAt: new Date().toISOString(),
+    };
+    dispatch({ type: "ADD_TASK", payload: newTask });
+    return newTask;
+  }, []); // stable — reads live state via stateRef
+
+  const updateTask = useCallback(async (taskData) => {
+    const existing = stateRef.current.tasks.find((t) => t.id === taskData.id);
+    if (existing?.notificationIds?.length) {
+      await cancelNotification(existing.notificationIds);
+    }
+    let notificationIds = [];
+    if (stateRef.current.permissionsGranted && taskData.isActive) {
+      try {
+        notificationIds = await scheduleNotification(taskData);
+      } catch (e) {
+        console.error("Reschedule error:", e);
+      }
+    }
+    dispatch({
+      type: "UPDATE_TASK",
+      payload: { ...taskData, notificationIds },
+    });
+  }, []); // stable
+
+  const deleteTask = useCallback(async (taskId) => {
+    const task = stateRef.current.tasks.find((t) => t.id === taskId);
+    if (task?.notificationIds?.length) {
+      await cancelNotification(task.notificationIds);
+    }
+    dispatch({ type: "DELETE_TASK", payload: taskId });
+  }, []); // stable
+
+  const toggleTask = useCallback(async (taskId) => {
+    const task = stateRef.current.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    if (task.isActive) {
+      if (task.notificationIds?.length) {
+        await cancelNotification(task.notificationIds);
+      }
+      dispatch({
+        type: "UPDATE_TASK",
+        payload: { ...task, isActive: false, notificationIds: [] },
+      });
+    } else {
       let notificationIds = [];
-      if (state.permissionsGranted && taskData.isActive) {
+      if (stateRef.current.permissionsGranted) {
         try {
-          notificationIds = await scheduleNotification(taskData);
+          notificationIds = await scheduleNotification({ ...task });
         } catch (e) {
-          console.error("Reschedule error:", e);
+          console.error("Toggle reschedule error:", e);
         }
       }
       dispatch({
         type: "UPDATE_TASK",
-        payload: { ...taskData, notificationIds },
+        payload: { ...task, isActive: true, notificationIds },
       });
-    },
-    [state.tasks, state.permissionsGranted],
-  );
-
-  const deleteTask = useCallback(
-    async (taskId) => {
-      const task = state.tasks.find((t) => t.id === taskId);
-      if (task?.notificationIds?.length)
-        await cancelNotification(task.notificationIds);
-      dispatch({ type: "DELETE_TASK", payload: taskId });
-    },
-    [state.tasks],
-  );
+    }
+  }, []); // stable
 
   // Clears ALL tasks. Web-safe: cancelAllNotifications swallows web errors.
   const clearAllTasks = useCallback(async () => {
@@ -228,16 +232,18 @@ export function TaskProvider({ children }) {
     }
     const ok = await clearStorageTasks();
     dispatch({ type: "CLEAR_TASKS" });
-    if (!ok)
+    if (!ok) {
       showToast("error", "Clear failed", "Storage error — please try again.");
-  }, [showToast]);
+    }
+  }, [showToast]); // showToast is stable
 
-  // NEW: Clears only fired one-time reminders. Daily/weekly are preserved.
+  // Clears only fired one-time reminders. Daily/weekly are preserved.
   const clearFiredTasks = useCallback(async () => {
-    const fired = state.tasks.filter(isOneTimeFired);
-    const remaining = state.tasks.filter((t) => !isOneTimeFired(t));
+    const tasks = stateRef.current.tasks;
+    const fired = tasks.filter(isOneTimeFired);
+    const remaining = tasks.filter((t) => !isOneTimeFired(t));
 
-    // Defensive: cancel any leftover notifications for fired tasks
+    // Cancel any leftover notification IDs defensively
     for (const t of fired) {
       if (t.notificationIds?.length) {
         try {
@@ -249,36 +255,7 @@ export function TaskProvider({ children }) {
     }
 
     dispatch({ type: "SET_TASKS", payload: remaining });
-  }, [state.tasks]);
-
-  const toggleTask = useCallback(
-    async (taskId) => {
-      const task = state.tasks.find((t) => t.id === taskId);
-      if (!task) return;
-      if (task.isActive) {
-        if (task.notificationIds?.length)
-          await cancelNotification(task.notificationIds);
-        dispatch({
-          type: "UPDATE_TASK",
-          payload: { ...task, isActive: false, notificationIds: [] },
-        });
-      } else {
-        let notificationIds = [];
-        if (state.permissionsGranted) {
-          try {
-            notificationIds = await scheduleNotification({ ...task });
-          } catch (e) {
-            console.error("Toggle reschedule error:", e);
-          }
-        }
-        dispatch({
-          type: "UPDATE_TASK",
-          payload: { ...task, isActive: true, notificationIds },
-        });
-      }
-    },
-    [state.tasks, state.permissionsGranted],
-  );
+  }, []); // stable — reads via stateRef
 
   return (
     <TaskContext.Provider

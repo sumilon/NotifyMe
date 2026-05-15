@@ -3,24 +3,21 @@
  *
  * TRIGGER FORMAT (expo-notifications ~0.32):
  * Every trigger MUST have a `type` field matching SchedulableTriggerInputTypes.
- * Without `type`, the library falls through to a channel-only (immediate) trigger.
  *
  * Correct values:
  *   TIME_INTERVAL → type: 'timeInterval', seconds: N
  *   DAILY         → type: 'daily',        hour, minute
  *   WEEKLY        → type: 'weekly',       weekday, hour, minute
- *   DATE          → type: 'date',         date: <Date object>   (uses timestamp)
  *
  * TIMEZONE:
  * task.timeHour / task.timeMinute are plain local integers stored at save time.
- * We NEVER parse task.time (a UTC ISO string) for hour/minute extraction.
  */
 
 import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { REPEAT_TYPES } from "./theme";
+import { CATEGORIES, REPEAT_TYPES } from "./theme";
 
 const CHANNEL_ID = "notifyme_default_v1";
 const CHANNEL_INIT_KEY = "notifyme_channel_default_v1";
@@ -105,7 +102,8 @@ async function _createAndroidChannel() {
 }
 
 // ─── Content builder ───────────────────────────────────────────────────────────
-const CATEGORY_ICONS = {
+// Emoji icons for notification (separate from Ionicons used in UI)
+const CATEGORY_EMOJIS = {
   general: "🔵",
   work: "💼",
   health: "❤️",
@@ -116,17 +114,7 @@ const CATEGORY_ICONS = {
   social: "👥",
 };
 
-const CATEGORY_LABELS = {
-  general: "General",
-  work: "Work",
-  health: "Health",
-  fitness: "Fitness",
-  personal: "Personal",
-  finance: "Finance",
-  study: "Study",
-  social: "Social",
-};
-
+// Default body text per category — distinct from UI labels, kept here intentionally
 const CATEGORY_BODIES = {
   work: "Time to focus and get this done.",
   health: "Your wellbeing comes first.",
@@ -138,47 +126,62 @@ const CATEGORY_BODIES = {
   general: "Tap to view your reminder.",
 };
 
-function buildContent(task) {
-  const categoryIcon = CATEGORY_ICONS[task.category] || "🔵";
-  const categoryLabel = CATEGORY_LABELS[task.category] || "Reminder";
-  const defaultBody =
-    CATEGORY_BODIES[task.category] || "Tap to view your reminder.";
-
+function getCategoryNotifMeta(categoryId) {
+  // Derive label from the single CATEGORIES source in theme.js
+  const cat = CATEGORIES.find((c) => c.id === categoryId) || CATEGORIES[0];
   return {
-    title: `${categoryIcon} ${task.title}`,
-    subtitle: categoryLabel, // shown on iOS below the app name
-    body: task.description?.trim() || defaultBody,
+    label: cat.label,
+    emoji: CATEGORY_EMOJIS[cat.id] || "🔵",
+    body: CATEGORY_BODIES[cat.id] || "Tap to view your reminder.",
+  };
+}
+
+function buildContent(task) {
+  const { label, emoji, body } = getCategoryNotifMeta(task.category);
+  return {
+    title: `${emoji} ${task.title}`,
+    subtitle: label, // shown on iOS below the app name
+    body: task.description?.trim() || body,
     sound: "default",
-    data: {
-      taskId: task.id,
-      category: task.category,
-      categoryLabel: categoryLabel,
-      categoryIcon: categoryIcon,
-    },
+    data: { taskId: task.id, category: task.category },
   };
 }
 
 // ─── Cancel helpers ─────────────────────────────────────────────────────────────
-async function cancelExistingForTask(task) {
-  if (task.notificationIds?.length) {
-    for (const nid of task.notificationIds) {
-      await Notifications.cancelScheduledNotificationAsync(nid).catch(() => {});
-    }
+/**
+ * Cancel by stored IDs only — fast path, no full-scan on every schedule call.
+ */
+async function cancelByIds(notificationIds) {
+  if (!notificationIds?.length) return;
+  for (const nid of notificationIds) {
+    await Notifications.cancelScheduledNotificationAsync(nid).catch(() => {});
   }
-  // Belt-and-suspenders: also cancel any scheduled notifications tagged with this taskId
+}
+
+/**
+ * Full scan — cancel any notification tagged with this taskId.
+ * Expensive; call only on launch cleanup or explicit data repair, not every schedule.
+ *
+ * TODO: Wire this up in a future "repair notifications" flow (e.g. Settings → Fix Notifications),
+ * or call it during app init after loadTasks() as a one-time belt-and-suspenders cleanup
+ * for users upgrading from older app versions that didn't reliably persist notificationIds.
+ */
+export async function cancelOrphanedNotificationsForTask(taskId) {
   try {
     const all = await Notifications.getAllScheduledNotificationsAsync();
     for (const n of all) {
-      if (n.content?.data?.taskId === task.id) {
+      if (n.content?.data?.taskId === taskId) {
         await Notifications.cancelScheduledNotificationAsync(
           n.identifier,
         ).catch(() => {});
       }
     }
-  } catch {}
+  } catch {
+    // Non-critical cleanup — silently ignore
+  }
 }
 
-// ─── Local time extraction (clean — no ISO fallback after migration) ──────────
+// ─── Local time extraction ────────────────────────────────────────────────────
 function getLocalDateInts(task) {
   const now = new Date();
   return {
@@ -190,16 +193,17 @@ function getLocalDateInts(task) {
 
 // ─── Main scheduler ────────────────────────────────────────────────────────────
 export async function scheduleNotification(task) {
-  await cancelExistingForTask(task);
+  // Fast cancel via stored IDs (avoids expensive getAllScheduledNotifications scan)
+  await cancelByIds(task.notificationIds);
 
   const content = buildContent(task);
   const now = new Date();
 
-  // channelId is only added on Android — it must NOT appear on iOS
+  // channelId is only added on Android — must NOT appear on iOS
   const androidChannel =
     Platform.OS === "android" ? { channelId: CHANNEL_ID } : {};
 
-  // Build a list of all time slots: primary + any additional
+  // Build list of all time slots: primary + additional
   const allTimes = [
     { hours: task.timeHour ?? 0, minutes: task.timeMinute ?? 0 },
     ...(task.additionalTimes || []).map((t) => ({
@@ -215,12 +219,7 @@ export async function scheduleNotification(task) {
       for (const { hours, minutes } of allTimes) {
         const id = await Notifications.scheduleNotificationAsync({
           content,
-          trigger: {
-            type: "daily",
-            hour: hours,
-            minute: minutes,
-            ...androidChannel,
-          },
+          trigger: { type: "daily", hour: hours, minute: minutes, ...androidChannel },
         });
         ids.push(id);
         console.log(
@@ -262,7 +261,6 @@ export async function scheduleNotification(task) {
     const ids = [];
 
     for (const { hours, minutes } of allTimes) {
-      // Build fire instant entirely in LOCAL time — no UTC conversion
       const fireAt = new Date(year, month, day, hours, minutes, 0, 0);
 
       if (fireAt <= now) {
@@ -316,20 +314,12 @@ export async function scheduleNotification(task) {
 
 // ─── Cancel ────────────────────────────────────────────────────────────────────
 export async function cancelNotification(notificationIds) {
-  if (!notificationIds?.length) return;
-  for (const id of notificationIds) {
-    try {
-      await Notifications.cancelScheduledNotificationAsync(id);
-    } catch {
-      // ignore — web or already-cancelled
-    }
-  }
+  await cancelByIds(notificationIds);
 }
 
 // ─── Cancel all (web-safe) ─────────────────────────────────────────────────────
 export async function cancelAllNotifications() {
   try {
-    // expo-notifications throws "not implemented" on web — swallow it
     await Notifications.cancelAllScheduledNotificationsAsync();
   } catch (e) {
     if (Platform.OS !== "web") console.error("cancelAllNotifications:", e);
@@ -362,11 +352,6 @@ export async function sendTestNotification() {
       sound: "default",
       data: { test: true },
     },
-    trigger: {
-      type: "timeInterval", // ← required
-      seconds: 5,
-      repeats: false,
-      ...androidChannel,
-    },
+    trigger: { type: "timeInterval", seconds: 5, repeats: false, ...androidChannel },
   });
 }
