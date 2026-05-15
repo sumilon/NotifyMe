@@ -59,7 +59,7 @@ export async function saveTasks(tasks) {
     await AsyncStorage.setItem(TASKS_KEY, JSON.stringify(tasks));
     return true;
   } catch (e) {
-    console.error("Error saving tasks:", e);
+    __DEV__ && console.error("Error saving tasks:", e);
     return false;
   }
 }
@@ -82,15 +82,15 @@ export async function loadTasks() {
     if (changed) {
       try {
         await AsyncStorage.setItem(TASKS_KEY, JSON.stringify(migrated));
-        console.log("[NotifyMe] Migrated legacy task format → integer fields.");
+        __DEV__ && console.log("[NotifyMe] Migrated legacy task format → integer fields.");
       } catch (e) {
-        console.error("Migration save failed:", e);
+        __DEV__ && console.error("Migration save failed:", e);
       }
     }
 
     return migrated;
   } catch (e) {
-    console.error("Error loading tasks:", e);
+    __DEV__ && console.error("Error loading tasks:", e);
     return [];
   }
 }
@@ -100,7 +100,7 @@ export async function clearAllTasks() {
     await AsyncStorage.removeItem(TASKS_KEY);
     return true;
   } catch (e) {
-    console.error("Error clearing tasks:", e);
+    __DEV__ && console.error("Error clearing tasks:", e);
     return false;
   }
 }
