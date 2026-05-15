@@ -152,14 +152,27 @@ export default function AddTaskScreen({ navigation, route }) {
     description: editingTask?.description || "",
     timeHour: isEditing ? editingTask.timeHour : null,
     timeMinute: isEditing ? editingTask.timeMinute : null,
-    additionalTimes: JSON.stringify(editingTask?.additionalTimes || []),
+    additionalTimes: editingTask?.additionalTimes || [],
     dateYear: isEditing ? editingTask.dateYear : null,
     dateMonth: isEditing ? editingTask.dateMonth : null,
     dateDay: isEditing ? editingTask.dateDay : null,
     repeatType: editingTask?.repeatType || REPEAT_TYPES.ONCE,
-    selectedDays: JSON.stringify(editingTask?.selectedDays || []),
+    selectedDays: editingTask?.selectedDays || [],
     category: editingTask?.category || "general",
   });
+
+  // Lightweight array comparison — avoids JSON.stringify on every keystroke.
+  // Checks length first (fast path), then each element by index.
+  function arraysEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const ai = a[i], bi = b[i];
+      if (typeof ai === "object" && ai !== null) {
+        if (ai.hour !== bi?.hour || ai.minute !== bi?.minute) return false;
+      } else if (ai !== bi) return false;
+    }
+    return true;
+  }
 
   const isDirty = useMemo(() => {
     const iv = initialValues.current;
@@ -180,12 +193,12 @@ export default function AddTaskScreen({ navigation, route }) {
       description !== iv.description ||
       timeInts.hour !== iv.timeHour ||
       timeInts.minute !== iv.timeMinute ||
-      JSON.stringify(additionalTimes) !== iv.additionalTimes ||
+      !arraysEqual(additionalTimes, iv.additionalTimes) ||
       dateInts.year !== iv.dateYear ||
       dateInts.month !== iv.dateMonth ||
       dateInts.day !== iv.dateDay ||
       repeatType !== iv.repeatType ||
-      JSON.stringify(selectedDays) !== iv.selectedDays ||
+      !arraysEqual(selectedDays, iv.selectedDays) ||
       category !== iv.category
     );
   }, [
