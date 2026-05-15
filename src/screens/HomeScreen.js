@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useMemo } from "react";
+import React, { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import {
   View,
   Text,
@@ -16,7 +16,7 @@ import { useToast } from "../context/ToastContext";
 import { TaskCard, EmptyState, StatsBar } from "../components/TaskCard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import NextUpBanner from "../components/NextUpBanner";
-import { isOneTimeFired } from "../utils/taskUtils";
+import { isOneTimeFired, getNextFireDate } from "../utils/taskUtils";
 import {
   COLORS,
   FONTS,
@@ -49,7 +49,7 @@ function getGreetingInfo() {
 }
 
 // ─── FiredSectionHeader — extracted component so it's not JSX inside useMemo ──
-function FiredSectionHeader({ count, expanded, onToggle, onClear }) {
+const FiredSectionHeader = React.memo(function FiredSectionHeader({ count, expanded, onToggle, onClear }) {
   if (count === 0) return null;
   return (
     <TouchableOpacity
@@ -85,10 +85,10 @@ function FiredSectionHeader({ count, expanded, onToggle, onClear }) {
       </View>
     </TouchableOpacity>
   );
-}
+});
 
 // ─── NoResults — extracted component ───────────────────────────────────────────
-function NoResults({ searchQuery, filterActive, onAdd }) {
+const NoResults = React.memo(function NoResults({ searchQuery, filterActive, onAdd }) {
   if (searchQuery) {
     return (
       <View style={s.noResults}>
@@ -121,7 +121,7 @@ function NoResults({ searchQuery, filterActive, onAdd }) {
     );
   }
   return <EmptyState onAdd={onAdd} />;
-}
+});
 
 // ─── Main Screen ───────────────────────────────────────────────────────────────
 export default function HomeScreen({ navigation }) {
@@ -143,10 +143,15 @@ export default function HomeScreen({ navigation }) {
   const [firedExpanded, setFiredExpanded] = useState(false);
   const [clearFiredConfirm, setClearFiredConfirm] = useState(false);
   const inputRef = useRef(null);
+  // tasksRef always holds the latest tasks so handlers don't need tasks in
+  // their dep arrays — prevents renderTask from being recreated on every change.
+  const tasksRef = useRef(tasks);
+  useEffect(() => { tasksRef.current = tasks; }, [tasks]);
 
-  // Recomputed on every render so greeting stays accurate if app
-  // is open past midnight — negligible cost for a date object creation.
-  const { greeting, today } = getGreetingInfo();
+  // Memoized per-hour so greeting stays accurate if the app is open past a
+  // time boundary, without recomputing on every render.
+  const currentHour = new Date().getHours();
+  const { greeting, today } = useMemo(() => getGreetingInfo(), [currentHour]);
 
   const { upcomingTasks, firedTasks } = useMemo(() => {
     const q = searchQuery.toLowerCase();
@@ -203,17 +208,28 @@ export default function HomeScreen({ navigation }) {
   }, [tasks, searchQuery, filterActive, sortBy]);
 
   const { activeCount, pausedCount } = useMemo(
-    () => ({
-      activeCount: tasks.filter((t) => t.isActive).length,
-      pausedCount: tasks.filter((t) => !t.isActive).length,
-    }),
+    () =>
+      tasks.reduce(
+        (acc, t) => {
+          if (t.isActive) acc.activeCount++;
+          else acc.pausedCount++;
+          return acc;
+        },
+        { activeCount: 0, pausedCount: 0 },
+      ),
     [tasks],
   );
 
-  const nextActiveBanner = useMemo(
-    () => upcomingTasks.find((t) => t.isActive) ?? null,
-    [upcomingTasks],
-  );
+  const nextActiveBanner = useMemo(() => {
+    const now = new Date();
+    let best = null;
+    for (const t of tasks) {
+      const next = getNextFireDate(t, now);
+      if (!next) continue;
+      if (!best || next < best.fireAt) best = { task: t, fireAt: next };
+    }
+    return best; // { task, fireAt } | null
+  }, [tasks]);
 
   const FILTERS = useMemo(
     () => [
@@ -228,10 +244,10 @@ export default function HomeScreen({ navigation }) {
   const handleDeleteRequest = useCallback(
     (id) => {
       hapticLight();
-      const task = tasks.find((t) => t.id === id);
+      const task = tasksRef.current.find((t) => t.id === id);
       setConfirmState({ id, title: task?.title || "this reminder" });
     },
-    [tasks],
+    [], // stable — reads live tasks via tasksRef
   );
 
   const handleDeleteConfirm = useCallback(async () => {
@@ -246,7 +262,7 @@ export default function HomeScreen({ navigation }) {
   const handleToggle = useCallback(
     async (id) => {
       hapticLight();
-      const task = tasks.find((t) => t.id === id);
+      const task = tasksRef.current.find((t) => t.id === id);
       await toggleTask(id);
       showToast(
         "info",
@@ -254,7 +270,7 @@ export default function HomeScreen({ navigation }) {
         task?.title,
       );
     },
-    [tasks, toggleTask, showToast],
+    [toggleTask, showToast], // stable — reads live tasks via tasksRef
   );
 
   const handleClearFiredConfirm = useCallback(async () => {
@@ -421,7 +437,11 @@ export default function HomeScreen({ navigation }) {
 
       {/* Next Up */}
       {!searchQuery && nextActiveBanner && (
-        <NextUpBanner task={nextActiveBanner} onPress={handleEdit} />
+        <NextUpBanner
+          task={nextActiveBanner.task}
+          fireAt={nextActiveBanner.fireAt}
+          onPress={handleEdit}
+        />
       )}
 
       {/* Search */}
