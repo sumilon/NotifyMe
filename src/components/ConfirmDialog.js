@@ -26,8 +26,13 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
 }) {
-  const scale = useRef(new Animated.Value(0.9)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
+  // Lazy init — constructors run only once per mount, not on every render.
+  const scaleRef = useRef(null);
+  if (!scaleRef.current) scaleRef.current = new Animated.Value(0.9);
+  const opacityRef = useRef(null);
+  if (!opacityRef.current) opacityRef.current = new Animated.Value(0);
+  const scale = scaleRef.current;
+  const opacity = opacityRef.current;
   // Track modal mount separately so it stays mounted during exit animation
   const [mounted, setMounted] = React.useState(visible);
 

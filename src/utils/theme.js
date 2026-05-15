@@ -34,14 +34,6 @@ export const COLORS = {
   borderMid: "rgba(255,255,255,0.11)",
   borderStrong: "rgba(255,255,255,0.16)",
 
-  catGeneral: "#0A84FF",
-  catWork: "#5E5CE6",
-  catHealth: "#FF375F",
-  catFitness: "#30D158",
-  catPersonal: "#FF9F0A",
-  catFinance: "#64D2FF",
-  catStudy: "#BF5AF2",
-  catSocial: "#FF6961",
 
   gradientPrimary: ["#0A84FF", "#0055D4"],
   gradientSuccess: ["#30D158", "#1DA845"],

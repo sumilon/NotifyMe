@@ -23,18 +23,27 @@ import {
 
 // ─── TaskCard ──────────────────────────────────────────────────────────────────
 export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-  const opacityAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(20)).current;
+  // Lazy init — Animated.Value constructor runs only once, not on every render.
+  const scaleAnim = useRef(null);
+  if (!scaleAnim.current) scaleAnim.current = new Animated.Value(1);
+  const opacityAnim = useRef(null);
+  if (!opacityAnim.current) opacityAnim.current = new Animated.Value(0);
+  const slideAnim = useRef(null);
+  if (!slideAnim.current) slideAnim.current = new Animated.Value(20);
+
+  // Unwrap for convenience (same ref object, just avoids .current everywhere below)
+  const scale = scaleAnim.current;
+  const opacity = opacityAnim.current;
+  const slide = slideAnim.current;
 
   useEffect(() => {
     const anim = Animated.parallel([
-      Animated.timing(opacityAnim, {
+      Animated.timing(opacity, {
         toValue: 1,
         duration: 320,
         useNativeDriver: true,
       }),
-      Animated.spring(slideAnim, {
+      Animated.spring(slide, {
         toValue: 0,
         tension: 70,
         friction: 11,
@@ -48,22 +57,22 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
   // Stable press handlers — defined with useCallback so they don't
   // cause child re-renders when the parent re-renders.
   const handlePressIn = useCallback(() => {
-    Animated.spring(scaleAnim, {
+    Animated.spring(scale, {
       toValue: 0.972,
       tension: 300,
       friction: 20,
       useNativeDriver: true,
     }).start();
-  }, [scaleAnim]);
+  }, [scale]);
 
   const handlePressOut = useCallback(() => {
-    Animated.spring(scaleAnim, {
+    Animated.spring(scale, {
       toValue: 1,
       tension: 300,
       friction: 20,
       useNativeDriver: true,
     }).start();
-  }, [scaleAnim]);
+  }, [scale]);
 
   const handleEdit = useCallback(() => onEdit(task), [onEdit, task]);
   const handleDelete = useCallback(() => onDelete(task.id), [onDelete, task.id]);
@@ -106,8 +115,8 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
   return (
     <Animated.View
       style={{
-        transform: [{ scale: scaleAnim }, { translateY: slideAnim }],
-        opacity: opacityAnim,
+        transform: [{ scale }, { translateY: slide }],
+        opacity,
       }}
     >
       <TouchableOpacity

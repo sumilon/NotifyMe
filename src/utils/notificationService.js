@@ -222,7 +222,7 @@ export async function scheduleNotification(task) {
           trigger: { type: "daily", hour: hours, minute: minutes, ...androidChannel },
         });
         ids.push(id);
-        console.log(
+        __DEV__ && console.log(
           `[NotifyMe] DAILY scheduled at ${hours}:${String(minutes).padStart(2, "0")} — id: ${id}`,
         );
       }
@@ -250,7 +250,7 @@ export async function scheduleNotification(task) {
           ids.push(id);
         }
       }
-      console.log(
+      __DEV__ && console.log(
         `[NotifyMe] WEEKLY scheduled on days [${task.selectedDays}] × ${allTimes.length} time(s) — ids: ${ids}`,
       );
       return ids;
@@ -271,7 +271,7 @@ export async function scheduleNotification(task) {
 
         if (isToday) {
           fireAt.setDate(fireAt.getDate() + 1);
-          console.log(
+          __DEV__ && console.log(
             `[NotifyMe] Time already passed today — rescheduled for tomorrow: ${fireAt.toLocaleString()}`,
           );
         } else {
@@ -287,7 +287,7 @@ export async function scheduleNotification(task) {
         Math.round((fireAt.getTime() - now.getTime()) / 1000),
       );
 
-      console.log(
+      __DEV__ && console.log(
         `[NotifyMe] ONCE → "${task.title}" fires at ${fireAt.toLocaleString()}` +
           ` — ${Math.round(secondsUntilFire / 60)} min from now (${secondsUntilFire}s)`,
       );
@@ -302,7 +302,7 @@ export async function scheduleNotification(task) {
         },
       });
       ids.push(id);
-      console.log(`[NotifyMe] Notification scheduled — id: ${id}`);
+      __DEV__ && console.log(`[NotifyMe] Notification scheduled — id: ${id}`);
     }
 
     return ids;

@@ -1,36 +1,43 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { TouchableOpacity, View, Text, StyleSheet } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import {
-  COLORS,
-  FONTS,
-  SPACING,
-  RADIUS,
-  getCategoryMeta,
-  formatTaskTime,
-} from "../utils/theme";
+import { COLORS, FONTS, SPACING, RADIUS, getCategoryMeta } from "../utils/theme";
 
-export default React.memo(function NextUpBanner({ task, onPress }) {
-  if (!task) return null;
-  const meta = getCategoryMeta(task.category);
-
-  // Find the next upcoming time slot (soonest in the future)
+function formatFireAt(fireAt) {
+  if (!fireAt) return "";
   const now = new Date();
-  const nowMins = now.getHours() * 60 + now.getMinutes();
-  const allSlots = [
-    { hour: task.timeHour ?? 0, minute: task.timeMinute ?? 0 },
-    ...(task.additionalTimes || []),
-  ].sort((a, b) => a.hour * 60 + a.minute - (b.hour * 60 + b.minute));
+  const sameDay =
+    fireAt.getFullYear() === now.getFullYear() &&
+    fireAt.getMonth() === now.getMonth() &&
+    fireAt.getDate() === now.getDate();
 
-  const nextSlot =
-    allSlots.find((s) => s.hour * 60 + s.minute > nowMins) || allSlots[0];
-  const displayTask = {
-    ...task,
-    timeHour: nextSlot.hour,
-    timeMinute: nextSlot.minute,
-  };
-  const totalTimes = allSlots.length;
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const isTomorrow =
+    fireAt.getFullYear() === tomorrow.getFullYear() &&
+    fireAt.getMonth() === tomorrow.getMonth() &&
+    fireAt.getDate() === tomorrow.getDate();
+
+  const h = fireAt.getHours();
+  const m = fireAt.getMinutes();
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 || 12;
+  const timeStr = `${h12}:${String(m).padStart(2, "0")} ${period}`;
+
+  if (sameDay) return `Today · ${timeStr}`;
+  if (isTomorrow) return `Tomorrow · ${timeStr}`;
+  return `${fireAt.toLocaleDateString("en-US", { weekday: "short" })} · ${timeStr}`;
+}
+
+export default React.memo(function NextUpBanner({ task, fireAt, onPress }) {
+  if (!task) return null;
+
+  const { meta, timesPerDay, formattedTime } = useMemo(() => ({
+    meta: getCategoryMeta(task.category),
+    timesPerDay: 1 + (task.additionalTimes?.length ?? 0),
+    formattedTime: formatFireAt(fireAt),
+  }), [task.category, task.additionalTimes, fireAt]);
 
   return (
     <TouchableOpacity
@@ -69,12 +76,11 @@ export default React.memo(function NextUpBanner({ task, onPress }) {
             style={{ marginRight: 3 }}
           />
           <Text style={[s.timeText, { color: meta.color }]}>
-            {formatTaskTime(displayTask)}
+            {formattedTime}
           </Text>
-          {totalTimes > 1 && (
+          {timesPerDay > 1 && (
             <Text style={[s.timesCount, { color: meta.color }]}>
-              {" "}
-              · {totalTimes}×
+              {" "}· {timesPerDay}×
             </Text>
           )}
         </View>
