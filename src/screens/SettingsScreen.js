@@ -22,7 +22,7 @@ import {
   hapticError,
 } from "../utils/haptics";
 
-function SettingRow({
+const SettingRow = React.memo(function SettingRow({
   icon,
   iconColor,
   title,
@@ -59,16 +59,16 @@ function SettingRow({
         ))}
     </TouchableOpacity>
   );
-}
+});
 
-function SectionHeader({ text }) {
+const SectionHeader = React.memo(function SectionHeader({ text }) {
   return (
     <View style={s.sectionHeader}>
       <View style={s.sectionLine} />
       <Text style={s.sectionText}>{text}</Text>
     </View>
   );
-}
+});
 
 export default function SettingsScreen({ navigation }) {
   const { tasks, permissionsGranted, clearAllTasks } = useTasks();
@@ -76,10 +76,15 @@ export default function SettingsScreen({ navigation }) {
   const [clearConfirm, setClearConfirm] = useState(false);
 
   const { activeCount, pausedCount } = useMemo(
-    () => ({
-      activeCount: tasks.filter((t) => t.isActive).length,
-      pausedCount: tasks.filter((t) => !t.isActive).length,
-    }),
+    () =>
+      tasks.reduce(
+        (acc, t) => {
+          if (t.isActive) acc.activeCount++;
+          else acc.pausedCount++;
+          return acc;
+        },
+        { activeCount: 0, pausedCount: 0 },
+      ),
     [tasks],
   );
 
@@ -104,7 +109,7 @@ export default function SettingsScreen({ navigation }) {
         "Notification will fire in 5 seconds",
       );
     } catch (e) {
-      console.error("Test notification failed:", e);
+      __DEV__ && console.error("Test notification failed:", e);
       hapticError();
       showToast(
         "error",
