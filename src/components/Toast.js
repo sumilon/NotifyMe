@@ -41,8 +41,16 @@ const TOAST_HEIGHT = 80; // generous estimate; keeps toast fully off-screen
 
 export default function Toast({ toast }) {
   const insets = useSafeAreaInsets();
-  const ty = useRef(new Animated.Value(-(TOAST_HEIGHT + insets.top))).current;
-  const op = useRef(new Animated.Value(0)).current;
+
+  // Lazy init — constructors run only once per mount, not on every render.
+  // ty starts off-screen; op starts invisible. Both are reset before each
+  // animation in the effect below, so the initial value doesn't matter.
+  const tyRef = useRef(null);
+  if (!tyRef.current) tyRef.current = new Animated.Value(-(TOAST_HEIGHT));
+  const opRef = useRef(null);
+  if (!opRef.current) opRef.current = new Animated.Value(0);
+  const ty = tyRef.current;
+  const op = opRef.current;
 
   // Animated refs so we can stop in-flight animations on cleanup
   const inAnimRef = useRef(null);
