@@ -22,7 +22,7 @@ import {
 } from "../utils/theme";
 
 // ─── TaskCard ──────────────────────────────────────────────────────────────────
-export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
+export const TaskCard = React.memo(function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
   // Lazy init — Animated.Value constructor runs only once, not on every render.
   const scaleAnim = useRef(null);
   if (!scaleAnim.current) scaleAnim.current = new Animated.Value(1);
@@ -324,7 +324,7 @@ export function TaskCard({ task, onToggle, onEdit, onDelete, fired = false }) {
       </TouchableOpacity>
     </Animated.View>
   );
-}
+});
 
 // ─── EmptyState ────────────────────────────────────────────────────────────────
 export function EmptyState({ onAdd }) {
@@ -333,13 +333,13 @@ export function EmptyState({ onAdd }) {
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    Animated.timing(fadeAnim, {
+    const fade = Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 600,
       useNativeDriver: true,
-    }).start();
+    });
 
-    Animated.loop(
+    const ring = Animated.loop(
       Animated.sequence([
         Animated.timing(ringAnim, {
           toValue: 1.08,
@@ -352,9 +352,9 @@ export function EmptyState({ onAdd }) {
           useNativeDriver: true,
         }),
       ]),
-    ).start();
+    );
 
-    Animated.loop(
+    const pulse = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
           toValue: 1.05,
@@ -367,7 +367,17 @@ export function EmptyState({ onAdd }) {
           useNativeDriver: true,
         }),
       ]),
-    ).start();
+    );
+
+    fade.start();
+    ring.start();
+    pulse.start();
+
+    return () => {
+      fade.stop();
+      ring.stop();
+      pulse.stop();
+    };
   }, []);
 
   return (

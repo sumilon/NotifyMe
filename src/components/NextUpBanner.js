@@ -7,6 +7,24 @@ import { COLORS, FONTS, SPACING, RADIUS, getCategoryMeta } from "../utils/theme"
 function formatFireAt(fireAt) {
   if (!fireAt) return "";
   const now = new Date();
+  const diffMs = fireAt - now;
+  const diffMins = Math.round(diffMs / 60000);
+
+  // Within the next 60 minutes — show relative time
+  if (diffMins > 0 && diffMins <= 60) {
+    if (diffMins === 1) return "in 1 min";
+    return `in ${diffMins} mins`;
+  }
+
+  // Within the next 24 hours — show hours
+  const diffHours = Math.round(diffMs / 3600000);
+  if (diffMins > 0 && diffHours <= 23) {
+    const remainingMins = diffMins % 60;
+    if (remainingMins === 0) return `in ${diffHours}h`;
+    return `in ${diffHours}h ${remainingMins}m`;
+  }
+
+  // Beyond today — fall back to absolute label
   const sameDay =
     fireAt.getFullYear() === now.getFullYear() &&
     fireAt.getMonth() === now.getMonth() &&

@@ -129,13 +129,13 @@ export const SHADOWS = {
 export const REPEAT_TYPES = { ONCE: "once", DAILY: "daily", WEEKLY: "weekly" };
 
 export const DAYS_OF_WEEK = [
-  { id: 0, label: "S", full: "Sunday" },
-  { id: 1, label: "M", full: "Monday" },
-  { id: 2, label: "T", full: "Tuesday" },
-  { id: 3, label: "W", full: "Wednesday" },
-  { id: 4, label: "T", full: "Thursday" },
-  { id: 5, label: "F", full: "Friday" },
-  { id: 6, label: "S", full: "Saturday" },
+  { id: 0, label: "Su", full: "Sunday" },
+  { id: 1, label: "Mo", full: "Monday" },
+  { id: 2, label: "Tu", full: "Tuesday" },
+  { id: 3, label: "We", full: "Wednesday" },
+  { id: 4, label: "Th", full: "Thursday" },
+  { id: 5, label: "Fr", full: "Friday" },
+  { id: 6, label: "Sa", full: "Saturday" },
 ];
 
 // ─── SINGLE SOURCE OF TRUTH for categories ─────────────────────────────────────

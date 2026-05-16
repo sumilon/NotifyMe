@@ -34,8 +34,13 @@ import { hapticLight, hapticSuccess, hapticError } from "../utils/haptics";
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 function defaultTimeInts() {
   const d = new Date();
-  d.setMinutes(d.getMinutes() + 5);
-  return { hour: d.getHours(), minute: d.getMinutes() };
+  // Round up to the next clean 15-minute boundary (e.g. 2:03 → 2:15, 2:51 → 3:00)
+  // This feels intentional and avoids forcing the user to scroll past an odd time.
+  const totalMinutes = d.getHours() * 60 + d.getMinutes();
+  const rounded = Math.ceil((totalMinutes + 1) / 15) * 15; // +1 ensures we always move forward
+  const hour = Math.floor(rounded / 60) % 24;
+  const minute = rounded % 60;
+  return { hour, minute };
 }
 
 function defaultDateInts() {
@@ -275,13 +280,18 @@ export default function AddTaskScreen({ navigation, route }) {
 
   const addExtraTime = useCallback(() => {
     hapticLight();
-    const d = new Date();
-    d.setMinutes(d.getMinutes() + 5 + (additionalTimes.length + 1) * 30);
-    setAdditionalTimes((prev) => [
-      ...prev,
-      { hour: d.getHours(), minute: d.getMinutes() },
-    ]);
-  }, [additionalTimes.length]);
+    setAdditionalTimes((prev) => {
+      // Base the new slot off the last existing slot (primary or additional),
+      // not off "now". Stagger by +15 min so slots are always ordered and spaced.
+      // If the primary slot is available via timeInts, use it as the anchor for
+      // the very first additional slot.
+      const lastSlot = prev.length > 0 ? prev[prev.length - 1] : timeInts;
+      const totalMinutes = lastSlot.hour * 60 + lastSlot.minute + 15;
+      const hour = Math.floor(totalMinutes / 60) % 24;
+      const minute = totalMinutes % 60;
+      return [...prev, { hour, minute }];
+    });
+  }, [timeInts]); // timeInts in dep so first extra slot anchors off primary
 
   const removeExtraTime = useCallback((index) => {
     hapticLight();
@@ -442,6 +452,13 @@ export default function AddTaskScreen({ navigation, route }) {
               maxLength={80}
               returnKeyType="next"
             />
+            <Text style={[
+              s.charCount,
+              title.length >= 72 && s.charCountWarn,
+              title.length === 80 && s.charCountMax,
+            ]}>
+              {title.length}/80
+            </Text>
           </View>
 
           {/* Description */}
@@ -457,6 +474,13 @@ export default function AddTaskScreen({ navigation, route }) {
               multiline
               numberOfLines={2}
             />
+            <Text style={[
+              s.charCount,
+              description.length >= 225 && s.charCountWarn,
+              description.length === 250 && s.charCountMax,
+            ]}>
+              {description.length}/250
+            </Text>
           </View>
 
           {/* Category */}
@@ -817,6 +841,15 @@ const s = StyleSheet.create({
   },
   input: { fontSize: FONTS.sizes.md, color: COLORS.textPrimary },
   inputMulti: { minHeight: 48, textAlignVertical: "top" },
+  charCount: {
+    fontSize: FONTS.sizes.xxs,
+    color: COLORS.textMuted,
+    textAlign: "right",
+    marginTop: 6,
+    fontWeight: FONTS.weights.medium,
+  },
+  charCountWarn: { color: COLORS.warning },
+  charCountMax: { color: COLORS.error },
 
   catRow: {
     flexDirection: "row",
@@ -884,9 +917,9 @@ const s = StyleSheet.create({
 
   daysRow: { flexDirection: "row", justifyContent: "space-between" },
   dayBtn: {
-    width: 43,
-    height: 43,
-    borderRadius: 22,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     backgroundColor: COLORS.surface,
     alignItems: "center",
     justifyContent: "center",
@@ -894,7 +927,7 @@ const s = StyleSheet.create({
     borderColor: COLORS.border,
   },
   dayTxt: {
-    fontSize: FONTS.sizes.sm,
+    fontSize: FONTS.sizes.xs,
     color: COLORS.textMuted,
     fontWeight: FONTS.weights.semibold,
   },

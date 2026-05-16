@@ -223,6 +223,35 @@ export function TaskProvider({ children }) {
     }
   }, []); // stable
 
+  // Re-evaluates tasks in memory — marks newly-fired ONCE tasks as inactive.
+  // Called on pull-to-refresh and by the periodic tick in HomeScreen.
+  // Skips tasks that have notificationIds — these were freshly (re-)scheduled
+  // by the user via toggle or edit and are genuinely pending, even if their
+  // stored date is in the past (notificationService reschedules for tomorrow).
+  const refreshTasks = useCallback(async () => {
+    const tasks = stateRef.current.tasks;
+    let changed = false;
+    const updated = tasks.map((t) => {
+      // Only auto-deactivate if: active, ONCE, fired, AND no pending notification.
+      // Having notificationIds means scheduleNotification ran and the OS has a
+      // real pending trigger — don't cancel it behind the user's back.
+      if (
+        t.isActive &&
+        isOneTimeFired(t) &&
+        (!t.notificationIds || t.notificationIds.length === 0)
+      ) {
+        changed = true;
+        return { ...t, isActive: false, notificationIds: [] };
+      }
+      return t;
+    });
+    if (changed) {
+      dispatch({ type: "SET_TASKS", payload: updated });
+      await saveTasks(updated);
+    }
+    return changed;
+  }, []); // stable — reads via stateRef
+
   // Clears ALL tasks. Web-safe: cancelAllNotifications swallows web errors.
   const clearAllTasks = useCallback(async () => {
     try {
@@ -267,6 +296,7 @@ export function TaskProvider({ children }) {
         updateTask,
         deleteTask,
         toggleTask,
+        refreshTasks,
         clearAllTasks,
         clearFiredTasks,
       }}

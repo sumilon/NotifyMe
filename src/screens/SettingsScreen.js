@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -75,18 +75,8 @@ export default function SettingsScreen({ navigation }) {
   const { showToast } = useToast();
   const [clearConfirm, setClearConfirm] = useState(false);
 
-  const { activeCount, pausedCount } = useMemo(
-    () =>
-      tasks.reduce(
-        (acc, t) => {
-          if (t.isActive) acc.activeCount++;
-          else acc.pausedCount++;
-          return acc;
-        },
-        { activeCount: 0, pausedCount: 0 },
-      ),
-    [tasks],
-  );
+  const activeCount = tasks.filter((t) => t.isActive).length;
+  const pausedCount = tasks.length - activeCount;
 
   // ─── Send a test notification (5 seconds) ───────────────────────────────────
   const handleSendTest = useCallback(async () => {

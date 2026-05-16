@@ -197,7 +197,6 @@ export async function scheduleNotification(task) {
   await cancelByIds(task.notificationIds);
 
   const content = buildContent(task);
-  const now = new Date();
 
   // channelId is only added on Android — must NOT appear on iOS
   const androidChannel =
@@ -230,10 +229,13 @@ export async function scheduleNotification(task) {
     }
 
     // ── WEEKLY ─────────────────────────────────────────────────────────────────
-    if (
-      task.repeatType === REPEAT_TYPES.WEEKLY &&
-      task.selectedDays?.length > 0
-    ) {
+    if (task.repeatType === REPEAT_TYPES.WEEKLY) {
+      // Guard: if no days selected, bail early. Previously the empty-days case
+      // fell through into the ONCE block and fired a spurious one-time notification.
+      if (!task.selectedDays?.length) {
+        console.warn("[NotifyMe] WEEKLY task has no selectedDays — nothing scheduled.");
+        return [];
+      }
       const ids = [];
       for (const { hours, minutes } of allTimes) {
         for (const day of task.selectedDays) {
@@ -257,19 +259,41 @@ export async function scheduleNotification(task) {
     }
 
     // ── ONCE ───────────────────────────────────────────────────────────────────
+    // NOTE ON TRIGGER STRATEGY:
+    // We use `type: "date"` (absolute timestamp) instead of `type: "timeInterval"`
+    // (relative countdown). This is critical for multi-slot reliability in real APK builds:
+    //
+    //   • timeInterval counts seconds from when scheduleNotificationAsync() *returns*,
+    //     not from when you called it. In a tight loop over multiple slots, each await
+    //     takes ~50-200ms, so later slots drift slightly. For slots close to "now"
+    //     (common in testing), this drift can push them past their intended time.
+    //
+    //   • "date" trigger hands the OS a fixed wall-clock timestamp. The OS fires it
+    //     at exactly that moment regardless of when the JS call completed.
+    //
+    // On iOS, "date" is natively supported. On Android, expo-notifications maps it
+    // to an exact AlarmManager alarm (requires SCHEDULE_EXACT_ALARM permission on
+    // Android 12+, which EAS/Expo handles in the manifest).
+    //
+    // "now" is recaptured per-slot so the past-time check stays accurate as
+    // async scheduling calls accumulate a few hundred ms of latency.
     const { year, month, day } = getLocalDateInts(task);
     const ids = [];
 
     for (const { hours, minutes } of allTimes) {
+      // Recapture now per-slot — scheduling loop takes time, stale `now` causes
+      // inaccurate past-time checks for slots close to the current time.
+      const slotNow = new Date();
       const fireAt = new Date(year, month, day, hours, minutes, 0, 0);
 
-      if (fireAt <= now) {
+      if (fireAt <= slotNow) {
         const isToday =
-          year === now.getFullYear() &&
-          month === now.getMonth() &&
-          day === now.getDate();
+          year === slotNow.getFullYear() &&
+          month === slotNow.getMonth() &&
+          day === slotNow.getDate();
 
         if (isToday) {
+          // Time passed today — push to tomorrow so it still fires once
           fireAt.setDate(fireAt.getDate() + 1);
           __DEV__ && console.log(
             `[NotifyMe] Time already passed today — rescheduled for tomorrow: ${fireAt.toLocaleString()}`,
@@ -282,22 +306,24 @@ export async function scheduleNotification(task) {
         }
       }
 
-      const secondsUntilFire = Math.max(
-        10,
-        Math.round((fireAt.getTime() - now.getTime()) / 1000),
-      );
+      // Enforce a 30-second minimum so the OS has headroom to register the alarm
+      // before it's supposed to fire (important for very near-future slots).
+      const msUntilFire = fireAt.getTime() - slotNow.getTime();
+      if (msUntilFire < 30_000) {
+        fireAt.setTime(slotNow.getTime() + 30_000);
+        __DEV__ && console.log(`[NotifyMe] Clamped fire time to 30s minimum: ${fireAt.toLocaleString()}`);
+      }
 
       __DEV__ && console.log(
         `[NotifyMe] ONCE → "${task.title}" fires at ${fireAt.toLocaleString()}` +
-          ` — ${Math.round(secondsUntilFire / 60)} min from now (${secondsUntilFire}s)`,
+          ` — ${Math.round((fireAt.getTime() - Date.now()) / 60000)} min from now`,
       );
 
       const id = await Notifications.scheduleNotificationAsync({
         content,
         trigger: {
-          type: "timeInterval",
-          seconds: secondsUntilFire,
-          repeats: false,
+          type: "date",
+          date: fireAt,
           ...androidChannel,
         },
       });

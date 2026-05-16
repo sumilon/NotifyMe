@@ -130,6 +130,7 @@ export default function HomeScreen({ navigation }) {
     loading,
     toggleTask,
     deleteTask,
+    refreshTasks,
     clearFiredTasks,
     permissionsGranted,
   } = useTasks();
@@ -142,11 +143,32 @@ export default function HomeScreen({ navigation }) {
   const [searchFocused, setSearchFocused] = useState(false);
   const [firedExpanded, setFiredExpanded] = useState(false);
   const [clearFiredConfirm, setClearFiredConfirm] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  // nowTick updates every 60s so time-sensitive memos (nextActiveBanner) always
+  // use a fresh "now" even when the tasks array hasn't changed.
+  const [nowTick, setNowTick] = useState(() => new Date());
   const inputRef = useRef(null);
   // tasksRef always holds the latest tasks so handlers don't need tasks in
   // their dep arrays — prevents renderTask from being recreated on every change.
   const tasksRef = useRef(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+
+  // ─── Periodic tick — re-evaluate fired tasks every 60 s while screen is open ─
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshTasks();
+      setNowTick(new Date()); // advances nowTick → nextActiveBanner memo re-runs
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [refreshTasks]);
+
+  // ─── Pull-to-refresh handler ─────────────────────────────────────────────────
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    await refreshTasks();
+    setNowTick(new Date());
+    setIsRefreshing(false);
+  }, [refreshTasks]);
 
   // Memoized per-hour so greeting stays accurate if the app is open past a
   // time boundary, without recomputing on every render.
@@ -154,27 +176,45 @@ export default function HomeScreen({ navigation }) {
   const { greeting, today } = useMemo(() => getGreetingInfo(), [currentHour]);
 
   const { upcomingTasks, firedTasks } = useMemo(() => {
+    const now = nowTick; // use the ticking clock so fired/upcoming split updates every 60s
     const q = searchQuery.toLowerCase();
-    const filtered = tasks.filter((t) => {
-      const matchSearch =
-        !q ||
-        t.title.toLowerCase().includes(q) ||
-        (t.description || "").toLowerCase().includes(q) ||
-        (t.category || "").toLowerCase().includes(q);
-      const matchFilter =
-        filterActive === "all" ||
-        (filterActive === "active" && t.isActive) ||
-        (filterActive === "inactive" && !t.isActive);
-      return matchSearch && matchFilter;
+
+    // ── Split fired vs upcoming FIRST, before any active/paused filter ──────
+    // Fired ONCE tasks are always isActive:false (set by TaskContext), so
+    // applying the active/paused filter before splitting caused fired tasks to
+    // disappear from "All" or appear only in "Paused" — confusing. Splitting
+    // first means the Fired section is always filter-independent.
+    const allFired = tasks.filter((t) => isOneTimeFired(t));
+    const allUpcoming = tasks.filter((t) => !isOneTimeFired(t));
+
+    const matchesSearch = (t) =>
+      !q ||
+      t.title.toLowerCase().includes(q) ||
+      (t.description || "").toLowerCase().includes(q) ||
+      (t.category || "").toLowerCase().includes(q);
+
+    // Upcoming: apply both search AND active/paused filter
+    const filteredUpcoming = allUpcoming.filter((t) => {
+      if (!matchesSearch(t)) return false;
+      if (filterActive === "active") return t.isActive;
+      if (filterActive === "inactive") return !t.isActive;
+      return true; // "all"
     });
+
+    // Fired: apply search only — active/paused filter does not apply
+    const filteredFired = allFired.filter(matchesSearch);
 
     const sorter = (a, b) => {
       if (sortBy === "time") {
-        return (
-          (a.timeHour ?? 0) * 60 +
-          (a.timeMinute ?? 0) -
-          ((b.timeHour ?? 0) * 60 + (b.timeMinute ?? 0))
-        );
+        // Use getNextFireDate for all types so ONCE, DAILY, and WEEKLY are all
+        // compared by their actual next fire date — not just time-of-day.
+        const na = getNextFireDate(a, now);
+        const nb = getNextFireDate(b, now);
+        // Tasks with no upcoming fire date (inactive/fired) sort to the end
+        if (!na && !nb) return 0;
+        if (!na) return 1;
+        if (!nb) return -1;
+        return na - nb;
       }
       if (sortBy === "category") {
         return (a.category || "").localeCompare(b.category || "");
@@ -189,23 +229,23 @@ export default function HomeScreen({ navigation }) {
       return getTs(b) - getTs(a);
     };
 
-    const upcoming = filtered.filter((t) => !isOneTimeFired(t)).sort(sorter);
-    const fired = filtered
-      .filter((t) => isOneTimeFired(t))
-      .sort((a, b) => {
-        const fa = new Date(
-          a.dateYear ?? 0, a.dateMonth ?? 0, a.dateDay ?? 1,
-          a.timeHour ?? 0, a.timeMinute ?? 0,
-        );
-        const fb = new Date(
-          b.dateYear ?? 0, b.dateMonth ?? 0, b.dateDay ?? 1,
-          b.timeHour ?? 0, b.timeMinute ?? 0,
-        );
-        return fb - fa;
-      });
+    const firedSorter = (a, b) => {
+      const fa = new Date(
+        a.dateYear ?? 0, a.dateMonth ?? 0, a.dateDay ?? 1,
+        a.timeHour ?? 0, a.timeMinute ?? 0,
+      );
+      const fb = new Date(
+        b.dateYear ?? 0, b.dateMonth ?? 0, b.dateDay ?? 1,
+        b.timeHour ?? 0, b.timeMinute ?? 0,
+      );
+      return fb - fa;
+    };
 
-    return { upcomingTasks: upcoming, firedTasks: fired };
-  }, [tasks, searchQuery, filterActive, sortBy]);
+    return {
+      upcomingTasks: filteredUpcoming.sort(sorter),
+      firedTasks: filteredFired.sort(firedSorter),
+    };
+  }, [tasks, searchQuery, filterActive, sortBy, nowTick]);
 
   const { activeCount, pausedCount } = useMemo(
     () =>
@@ -221,7 +261,7 @@ export default function HomeScreen({ navigation }) {
   );
 
   const nextActiveBanner = useMemo(() => {
-    const now = new Date();
+    const now = nowTick; // re-runs every 60s via nowTick, not just when tasks change
     let best = null;
     for (const t of tasks) {
       const next = getNextFireDate(t, now);
@@ -229,7 +269,7 @@ export default function HomeScreen({ navigation }) {
       if (!best || next < best.fireAt) best = { task: t, fireAt: next };
     }
     return best; // { task, fireAt } | null
-  }, [tasks]);
+  }, [tasks, nowTick]);
 
   const FILTERS = useMemo(
     () => [
@@ -559,6 +599,8 @@ export default function HomeScreen({ navigation }) {
           ListFooterComponent={ListFooter}
           contentContainerStyle={[s.list, isListEmpty && { flex: 1 }]}
           showsVerticalScrollIndicator={false}
+          onRefresh={handleRefresh}
+          refreshing={isRefreshing}
           removeClippedSubviews
           windowSize={7}
           maxToRenderPerBatch={10}
